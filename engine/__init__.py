@@ -7,6 +7,8 @@ from . import optim
 from . import data
 from . import deim
 
+from .core import *
+from .data import *
 from .backbone import *
 
 from .backbone import (

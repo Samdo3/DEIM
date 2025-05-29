@@ -97,12 +97,39 @@ class YAMLConfig(BaseConfig):
     @property
     def evaluator(self, ):
         if self._evaluator is None and 'evaluator' in self.yaml_cfg:
-            if self.yaml_cfg['evaluator']['type'] == 'CocoEvaluator':
-                from ..data import get_coco_api_from_dataset
-                base_ds = get_coco_api_from_dataset(self.val_dataloader.dataset)
-                self._evaluator = create('evaluator', self.global_cfg, coco_gt=base_ds)
-            else:
-                raise NotImplementedError(f"{self.yaml_cfg['evaluator']['type']}")
+            evaluator_type = self.yaml_cfg['evaluator'].get('type', None) # get()으로 안전하게 접근
+            if evaluator_type == 'CocoEvaluator':
+                # CocoEvaluator에 대한 기존 특별 처리 로직
+                from ..data import get_coco_api_from_dataset # data 모듈에서 함수 import
+                # val_dataloader가 먼저 빌드되도록 보장
+                if self._val_dataloader is None:
+                    _ = self.val_dataloader # self.val_dataloader 프로퍼티 호출하여 빌드
+                
+                if self._val_dataloader is not None and hasattr(self._val_dataloader, 'dataset'):
+                    base_ds = get_coco_api_from_dataset(self.val_dataloader.dataset)
+                    # create 함수는 global_cfg['evaluator'] 딕셔너리 내용을 사용.
+                    # 여기에 coco_gt 인자를 추가하여 전달.
+                    evaluator_creation_cfg = copy.deepcopy(self.global_cfg['evaluator'])
+                    evaluator_creation_cfg['coco_gt'] = base_ds
+                    self._evaluator = create('evaluator', evaluator_creation_cfg) # 수정된 cfg로 생성
+                else:
+                    raise ValueError("Validation Dataloader or its dataset is not available for CocoEvaluator.")
+            
+            elif evaluator_type == 'BYU2DEvaluator': # 우리가 추가한 커스텀 Evaluator 타입
+                # BYU2DEvaluator는 특별한 인자(예: coco_gt) 없이 YAML에 정의된 파라미터로 생성
+                # create 함수는 global_cfg['evaluator'] 딕셔너리 내용을 사용
+                print(f"     ## Creating Evaluator of type: {evaluator_type} ##")
+                self._evaluator = create('evaluator', self.global_cfg) # global_cfg['evaluator'] 사용
+            
+            elif evaluator_type is not None: # 다른 타입의 Evaluator (일반적인 생성 방식)
+                print(f"     ## Creating Evaluator of type: {evaluator_type} (using default create) ##")
+                self._evaluator = create('evaluator', self.global_cfg)
+
+            else: # evaluator type이 지정되지 않은 경우
+                raise ValueError("Evaluator 'type' is not specified in YAML config.")
+                
+
+
         return super().evaluator
 
     @staticmethod

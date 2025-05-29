@@ -1,0 +1,116 @@
+# DEIM/configs/byu_deim_2d_slice_config.yml
+__include__: [
+  './dataset/byu_slice_detection.yml',    # 위에서 만든 데이터셋 설정
+  './runtime.yml',                         # DEIM 기본 런타임 설정
+  # DEIM의 2D 증강 및 학습 전략을 가져옴
+  './base/rt_deim.yml',                    # Mosaic, Mixup 등 DEIM 학습 전략
+  './base/rt_optimizer.yml',               # DEIM 기본 옵티마이저/스케줄러
+  # 사용할 2D 모델 아키텍처 (예: RT-DETRv2-R50 기반)
+  './base/rtdetrv2_r50vd.yml',             # PResNet50 백본, HybridEncoder, RTDETRTransformerv2 디코더
+]
+
+output_dir: ./outputs/byu_deim_2d_slice_exp001 # 결과 저장 경로
+
+# --- 모델 및 학습 파라미터 오버라이드 (필요시) ---
+# num_classes는 byu_slice_detection.yml에서 이미 1로 설정됨 (모터 단일 클래스)
+# DEIMCriterion의 num_classes도 이에 맞게 설정됨 (rt_deim.yml에서 num_classes 전역 변수 참조)
+
+# 입력 이미지 크기 (각 슬라이스는 512x512)
+eval_spatial_size: [512, 512] # H, W - 2D 모델이므로
+
+# 학습 에폭, 배치 크기 등은 rt_optimizer.yml 또는 여기서 조정 가능
+epoches: 60 # 예시
+train_dataloader:
+  batch_size: 16 # GPU 메모리에 맞게 조절 (슬라이스 단위이므로 배치 늘리기 용이)
+  # transforms ops는 rt_deim.yml 것을 사용. 필요시 여기서 오버라이드.
+  # 예: Resize 크기를 512x512로 명시하거나, Normalize 파라미터 변경
+  dataset:
+    transforms:
+      ops:
+        # rt_deim.yml의 Mosaic, RandomPhotometricDistort 등을 사용
+        # Resize는 입력이 이미 512x512이므로 Mosaic 내부에서만 작동하거나, 다른 크기 학습 시 필요
+        - {type: Mosaic, output_size: 512, probability: 0.5, fill_value: 114}
+          # 이유: rt_deim.yml의 output_size: 320은 512x512 입력에 비해 작을 수 있음.
+          #      512로 설정하면 Mosaic된 이미지가 최종 입력 크기와 유사해짐.
+          #      probability는 rt_deim.yml의 mosaic_prob (0.5)와 맞추거나 조절.
+          #      fill_value는 0 (검정) 또는 이미지 평균값 (예: 114) 사용.
+          #      rotation_range, translation_range, scaling_range 등은 rt_deim.yml 값 참고하여 추가 가능.
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 114, p: 0.5} # fill 값, p(확률) 명시
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 1} # 박스 유효성 검사
+        - {type: RandomHorizontalFlip, p: 0.5} # p(확률) 명시
+        - {type: Resize, size: [512, 512]} # 최종 입력 크기 보장
+        - {type: SanitizeBoundingBoxes, min_size: 1} # Resize 후 다시 검사
+        # ConvertPILImage는 Dataset에서 이미 Tensor로 변환하므로 불필요
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True} # 박스 포맷 (중심x,중심y,너비,높이) 및 0-1 정규화
+        - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]} # ImageNet 통계 또는 데이터셋 통계 (3채널 복사했으므로)
+      policy: # 증강 적용/중단 시점 (rt_deim.yml의 값을 현재 epoches에 맞게 조정)
+        name: stop_epoch # rt_deim.yml의 policy.name을 명시적으로 가져옴
+        epoch: [4, 34, 58] # 예시 (epoches: 60, flat_epoch: 34, no_aug_epoch: 2 일 때)
+                           # 계산: [warmup 종료 시점 근처, flat_epoch, epoches - no_aug_epoch]
+                           # rt_deim.yml의 epoch: [4, 29, 50]은 epoches=58 기준이었음.
+                           # 이 값을 현재 설정된 epoches, flat_epoch, no_aug_epoch에 맞게 재계산 필요.
+        ops: ['Mosaic', 'RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop'] # rt_deim.yml의 policy.ops
+      mosaic_prob: 0.5 # rt_deim.yml 값 사용 또는 여기서 오버라이드
+  collate_fn: # rt_deim.yml 설정을 기반으로 하되, BYU 데이터에 맞게 조정
+    # type: BatchImageCollateFunction 은 rt_deim.yml 에서 상속됨
+    base_size: 512 # 입력 슬라이스 크기와 일치
+                   # 이유: 멀티스케일 학습 시 기준 크기. 단일 스케일이면 이 값으로 고정.
+    # base_size_repeat: 3 # rt_deim.yml 값. 멀티스케일 학습 시 다양성 증가.
+    # scales: null # 단일 스케일(512) 학습 시 명시적으로 null 또는 [[512,512]]로 설정하여 멀티스케일 비활성화.
+                   # 또는 stop_epoch: 0 으로 설정.
+                   # 로그에 "Multi-scales@ None" 이므로 현재 scales가 None인 상태로 보임.
+                   # 만약 단일 스케일로 학습하고 싶다면 이 상태 유지.
+    mixup_prob: 0.1 # MixUp 확률 (기본 0.5에서 줄여봄. BYU 데이터 특성상 과도한 Mixup이 불리할 수 있음)
+                    # 이유: 실험적으로 조절.
+    mixup_epochs: [4, 34] # MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
+                          # 이유: 학습 초중반에만 적용.
+    stop_epoch: 58    # 멀티스케일 학습 및 특정 증강 중단 에폭 (policy.epoch[2]와 일치)
+                      # 이유: 학습 후반에는 안정적인 학습을 위해 강한 증강 중단.
+
+val_dataloader:
+  batch_size: 32
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [512, 512]}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+        - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+
+
+# PResNet 백본 설정 (rtdetrv2_r50vd.yml에서 가져옴, 필요시 수정)
+PResNet:
+  pretrained: True # ImageNet 사전학습 가중치 사용
+  local_model_dir: ./RT-DETR-main/rtdetrv2_pytorch/INK1k/ # 실제 가중치 경로로 수정 필요!
+
+# DEIM 학습 전략 파라미터 (rt_deim.yml 에서 가져옴, epoches에 맞춰 재조정)
+# flat_epoch, no_aug_epoch 등은 위에서 epoches와 함께 이미 설정함.
+# 여기에 다시 정의하면 위쪽 정의를 덮어쓰게 됨. 일관성 유지를 위해 한 곳(위쪽)에서만 정의 권장.
+# 현재 YAML 파일은 아래쪽에 flat_epoch, no_aug_epoch 등을 다시 정의하고 있음.
+# 이는 위에서 정의한 epoches:60 과 연동되도록 값을 맞춰야 함.
+
+# 예시 (epoches: 60 기준, rt_deim.yml의 계산식 참고):
+# flat_epoch: 34      # (4 + 60 // 2) = 34. YAML 현재 값과 동일.
+# no_aug_epoch: 2     # YAML 현재 값. (60 // 10 = 6 또는 60 * 0.1 = 6 정도가 rt_deim.yml의 8/72 비율과 유사)
+                      # no_aug_epoch 값을 좀 더 늘려보는 것(예: 6)도 고려 가능.
+
+# train_dataloader 하위의 policy, collate_fn의 epoch 관련 값들도
+# 최종 결정된 epoches, flat_epoch, no_aug_epoch와 일관성 있게 설정해야 함.
+# 현재 YAML 파일은 이 부분을 위쪽 train_dataloader 정의와 별개로 아래쪽에 다시 정의하고 있음.
+# 이 또한 한 곳에서 일관되게 정의하는 것이 좋음.
+# 예를 들어, 아래의 train_dataloader 설정은 위쪽 train_dataloader 설정으로 통합하고,
+# epoch 값들을 최종 결정된 epoches, flat_epoch, no_aug_epoch에 맞춰 계산된 값으로 사용.
+
+# 현재 YAML 파일의 아래쪽 flat_epoch, no_aug_epoch, train_dataloader 설정은
+# 위에서 이미 동일한 이름으로 설정된 값들을 '덮어쓰게' 됩니다.
+# 따라서, 최종적으로 적용되는 값은 파일의 가장 아래쪽에 있는 정의입니다.
+# 로그에 나온 값들(flat_epochs=34, no_aug_epochs=2, total_epochs=60, policy.epoch=[4,34,58], mixup_epochs=[4,34], stop_epoch=58)을 보면
+# 이 아래쪽 정의가 실제로 적용된 것으로 보입니다.
+
+
+# 예시 (60 에폭 기준):
+# --- 아래 설정은 현재 YAML 파일의 구조를 따르되, 값의 일관성 및 이유 설명 ---
+flat_epoch: 34      # 계산: 4(warmup_epoch 가정) + (60(epoches) - 4) / 2 = 32. rt_deim.yml은 4 + epoch//2 = 4 + 60//2 = 34. 현재 값 유지.
+no_aug_epoch: 2     # 학습 마지막에 증강 없이 학습할 에폭 수. 너무 짧으면 효과 미미. (예: epoches의 10% = 6 에폭)
+

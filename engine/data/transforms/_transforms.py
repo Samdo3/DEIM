@@ -101,7 +101,7 @@ class ConvertBoxes(T.Transform):
         self.fmt = fmt
         self.normalize = normalize
 
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         spatial_size = getattr(inpt, _boxes_keys[1])
         if self.fmt:
             in_fmt = inpt.format.value.lower()

@@ -9,8 +9,8 @@ ema:
 epoches: 72
 clip_max_norm: 0.1
 
-train_dataloader:
-  total_batch_size: 16
+# train_dataloader:
+#   total_batch_size: 16
 
 optimizer:
   type: AdamW

@@ -27,7 +27,8 @@ def load_config(file_path, cfg=dict()):
     _, ext = os.path.splitext(file_path)
     assert ext in ['.yml', '.yaml'], "only support yaml files"
 
-    with open(file_path) as f:
+    # 파일을 열 때 encoding='utf-8' 추가
+    with open(file_path, encoding='utf-8') as f: # <--- 수정된 부분
         file_cfg = yaml.load(f, Loader=yaml.Loader)
         if file_cfg is None:
             return {}
@@ -41,7 +42,7 @@ def load_config(file_path, cfg=dict()):
             if not base_yaml.startswith('/'):
                 base_yaml = os.path.join(os.path.dirname(file_path), base_yaml)
 
-            with open(base_yaml) as f:
+            with open(base_yaml, encoding='utf-8') as f:
                 base_cfg = load_config(base_yaml, cfg)
                 merge_dict(cfg, base_cfg)
 

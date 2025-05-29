@@ -393,8 +393,10 @@ class HybridEncoder(nn.Module):
         return torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None, :, :]
 
     def forward(self, feats):
+        # print(f"HybridEncoder input feats shapes: {[f.shape for f in feats]}") # 입력 shape 확인
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
+        # print(f"HybridEncoder projected feats shapes: {[p.shape for p in proj_feats]}") # input_proj 후 shape 확인
 
         # encoder
         if self.num_encoder_layers > 0:

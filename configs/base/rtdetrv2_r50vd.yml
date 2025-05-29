@@ -57,20 +57,19 @@ RTDETRTransformerv2:
   feat_strides: [8, 16, 32]
   hidden_dim: 256
   num_levels: 3
-
   num_layers: 6
   num_queries: 300
-
   num_denoising: 100
   label_noise_ratio: 0.5
   box_noise_scale: 1.0    # 1.0 0.4
-
+  # learnt_init_query: False
   eval_idx: -1
 
   # NEW, can be chosen 
   num_points: [4, 4, 4]     # [3,3,3] [2,2,2]
   cross_attn_method: default  # default, discrete
-  query_select_method: default  # default, agnostic 
+  query_select_method: 'agnostic'  # default, agnostic 
+  aux_loss: True # 보조 손실 사용 (DETR 계열 기본)
 
 
 PostProcessor:
