@@ -130,9 +130,7 @@ dmypy.json
 # PyCharm
 .idea
 
-*.pt
-*.pth
-*.onnx
+
 *.zip
 *.html
 .DS_Store
