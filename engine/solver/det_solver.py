@@ -124,7 +124,7 @@ class DetSolver(BaseSolver):
             # (Optional) 주기적으로 검증 실행
             if (epoch + 1) % args.val_freq == 0 or epoch == args.epoches - 1:
                 module_to_eval = (self.ema.module
-                                  if self.ema and self.ema.device == self.device and epoch >= getattr(args.ema, 'start', 0)
+                                  if self.ema and epoch >= getattr(args.ema, 'start', 0)
                                   else self.model)
                 test_stats_dict, _ = evaluate(
                     module_to_eval,
@@ -185,7 +185,7 @@ class DetSolver(BaseSolver):
     def val(self, ):
         self.eval()
         args = self.cfg
-        module_to_eval = self.ema.module if self.ema and self.ema.device == self.device else self.model
+        module_to_eval = self.ema.module if self.ema else self.model
         test_stats, _ = evaluate(
             module_to_eval,
             self.criterion if getattr(args, 'val_loss', False) else None,
@@ -198,7 +198,9 @@ class DetSolver(BaseSolver):
         print("Validation results:", test_stats)
 
     def state_dict(self, epoch=-1, metric=None):
-        state = super().state_dict(epoch)
+        # super() 호출할 때 epoch 인자 안 넘김
+        state = super().state_dict()  # 부모는 인자 self만
+        state['epoch'] = epoch
         if metric is not None:
             state['best_metric'] = metric
         return state

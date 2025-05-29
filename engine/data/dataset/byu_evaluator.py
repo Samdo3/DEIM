@@ -68,26 +68,11 @@ class BYU2DEvaluator:
 
                 # 우리 대회는 단일 클래스(모터)이므로, label이 모터 클래스와 일치하는지 확인
                 if label == 0: # YAML에서 num_classes=1로 설정했으므로 모터 클래스는 0
-                    box_cxcywh_norm = pred_dict['boxes'][i].tolist() # [cx_norm, cy_norm, w_norm, h_norm] (0-1 범위)
+                    x1, y1, x2, y2 = pred_dict['boxes'][i].tolist() # PostProcessor가 이미 [x1, y1, x2, y2] 픽셀 좌표를 반환
 
-                    # 정규화된 좌표를 512x512 픽셀 좌표로 변환
-                    # PostProcessor에서 이미 원본 이미지 크기 기준으로 변환했을 수도 있음. 확인 필요.
-                    # 여기서는 0-1 정규화된 값으로 가정하고 변환.
-                    # DEIM의 PostProcessor는 일반적으로 입력 이미지의 orig_target_sizes를 받아
-                    # 정규화된 박스를 원래 이미지 스케일의 박스(xyxy)로 변환해줌.
-                    # 따라서 pred_dict['boxes']가 이미 픽셀 단위 [cx,cy,w,h] 또는 [x1,y1,x2,y2]일 수 있음.
-                    # BYUDataset2DSlices는 픽셀단위 cx,cy,w,h를 주고, ConvertBoxes(normalize=True)를 거치므로
-                    # 모델 입력 전에는 0-1 정규화된 cx,cy,w,h.
-                    # PostProcessor의 출력 'boxes'는 일반적으로 정규화되지 않은 픽셀 좌표 [x1,y1,x2,y2] 또는 [cx,cy,w,h].
-                    # 여기서는 pred_dict['boxes']가 픽셀 단위 [cx,cy,w,h] 라고 가정. (PostProcessor 확인 필요)
-
-                    # 만약 PostProcessor 출력이 정규화된 cx,cy,w,h 라면:
-                    # H_slice, W_slice = 512, 512
-                    # pred_y_pixel = box_cxcywh_norm[1] * H_slice
-                    # pred_x_pixel = box_cxcywh_norm[0] * W_slice
-                    # 여기서는 pred_dict['boxes']가 이미 픽셀단위 [cx,cy,w,h]라고 가정하고, 중심점만 사용.
-                    pred_x_pixel = box_cxcywh_norm[0]
-                    pred_y_pixel = box_cxcywh_norm[1]
+                    # 중심점(cx, cy)를 픽셀 단위로 계산
+                    pred_x_pixel = (x1 + x2) / 2.0
+                    pred_y_pixel = (y1 + y2) / 2.0
 
 
                     self.predictions_per_tomo[tomo_id].append(
@@ -159,7 +144,11 @@ class BYU2DEvaluator:
                 except FileNotFoundError:
                     print("Error: Could not load ground truth for summarization.")
                     return {"F_beta": 0.0, "Precision": 0.0, "Recall": 0.0, "TP": 0, "FP": 0, "FN": 0}
-
+        else:
+            # 여기서 df_labels_original_path, original_shapes_map_for_gt 둘 다 정상
+            # 1) df_labels_original_path로 GT CSV를 로드
+            self.df_labels_gt_all = pd.read_csv(df_labels_original_path)
+            self.original_shapes_for_gt_eval = original_shapes_map_for_gt
 
         true_positives = 0
         false_positives = 0
