@@ -17,10 +17,12 @@ output_dir: ./outputs/byu_deim_2d_slice_exp001 # 결과 저장 경로
 
 # 입력 이미지 크기 (각 슬라이스는 512x512)
 eval_spatial_size: [512, 512] # H, W - 2D 모델이므로
-val_freq: 2  # 10에폭마다 검증
-warmup_iter: 200
+val_freq: 10  # 10에폭마다 검증
+flat_epoch: 14     # 계산: 4(warmup_epoch 가정) + (30(epoches) - 4) / 2 = 17. rt_deim.yml은 4 + epoch//2 = 4 + 30//2 = 19. 현재 값 유지.
+no_aug_epoch: 2     # 학습 마지막에 증강 없이 학습할 에폭 수. 너무 짧으면 효과 미미. (예: epoches의 10% = 3 에폭)
+warmup_iter: 1000
 # 학습 에폭, 배치 크기 등은 rt_optimizer.yml 또는 여기서 조정 가능
-epoches: 4 # 예시
+epoches: 20 # 예시
 train_dataloader:
   batch_size: 64 # GPU 메모리에 맞게 조절 (슬라이스 단위이므로 배치 늘리기 용이)
   # transforms ops는 rt_deim.yml 것을 사용. 필요시 여기서 오버라이드.
@@ -28,27 +30,37 @@ train_dataloader:
   dataset:
     transforms:
       ops:
-        # rt_deim.yml의 Mosaic, RandomPhotometricDistort 등을 사용
-        # Resize는 입력이 이미 512x512이므로 Mosaic 내부에서만 작동하거나, 다른 크기 학습 시 필요
-        - {type: Mosaic, output_size: 512, probability: 0.0, fill_value: 114} # 테스트시 probability을 0으로 (원래 0.5)
-          # 이유: rt_deim.yml의 output_size: 320은 512x512 입력에 비해 작을 수 있음.
-          #      512로 설정하면 Mosaic된 이미지가 최종 입력 크기와 유사해짐.
-          #      probability는 rt_deim.yml의 mosaic_prob (0.5)와 맞추거나 조절.
-          #      fill_value는 0 (검정) 또는 이미지 평균값 (예: 114) 사용.
-          #      rotation_range, translation_range, scaling_range 등은 rt_deim.yml 값 참고하여 추가 가능.
+        # 1) Mosaic
+        - {type: Mosaic, output_size: 512, probability: 0.5, fill_value: 114}
+        
+        # 2) Photometric
         - {type: RandomPhotometricDistort, p: 0.5}
-        # - {type: RandomZoomOut, fill: 114, p: 0.5} # fill 값, p(확률) 명시
+        
+        # # 3) ZoomOut
+        # - {type: RandomZoomOut, fill: 114, p: 0.5}
+        
+        # # 4) IoUCrop
         # - {type: RandomIoUCrop, p: 0.8}
-        - {type: SanitizeBoundingBoxes, min_size: 1} # 박스 유효성 검사
-        - {type: RandomHorizontalFlip, p: 0.5} # p(확률) 명시
-        - {type: Resize, size: [512, 512]} # 최종 입력 크기 보장
-        - {type: SanitizeBoundingBoxes, min_size: 1} # Resize 후 다시 검사
-        # ConvertPILImage는 Dataset에서 이미 Tensor로 변환하므로 불필요
-        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True} # 박스 포맷 (중심x,중심y,너비,높이) 및 0-1 정규화
-        - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]} # ImageNet 통계 또는 데이터셋 통계 (3채널 복사했으므로)
+        
+        # 5) Sanitize(중간)
+        #    min_size=2 정도로 올려서, 너비/높이 2px 미만인 박스는 제거
+        - {type: SanitizeBoundingBoxes, min_size: 2}
+        
+        # 6) HorizontalFlip
+        - {type: RandomHorizontalFlip, p: 0.5}
+        
+        # 7) Resize
+        - {type: Resize, size: [512, 512]}
+        
+        # 8) Sanitize(최종)
+        - {type: SanitizeBoundingBoxes, min_size: 2}
+        
+        # 9) ConvertBoxes + Normalize
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+        - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
       policy: # 증강 적용/중단 시점 (rt_deim.yml의 값을 현재 epoches에 맞게 조정)
         name: stop_epoch # rt_deim.yml의 policy.name을 명시적으로 가져옴
-        epoch: [4, 34, 58] # 예시 (epoches: 60, flat_epoch: 34, no_aug_epoch: 2 일 때)
+        epoch: [4, 14, 18] # 예시 (epoches: 60, flat_epoch: 34, no_aug_epoch: 2 일 때)
                            # 계산: [warmup 종료 시점 근처, flat_epoch, epoches - no_aug_epoch]
                            # rt_deim.yml의 epoch: [4, 29, 50]은 epoches=58 기준이었음.
                            # 이 값을 현재 설정된 epoches, flat_epoch, no_aug_epoch에 맞게 재계산 필요.
@@ -65,9 +77,9 @@ train_dataloader:
                    # 만약 단일 스케일로 학습하고 싶다면 이 상태 유지.
     mixup_prob: 0.1 # MixUp 확률 (기본 0.5에서 줄여봄. BYU 데이터 특성상 과도한 Mixup이 불리할 수 있음)
                     # 이유: 실험적으로 조절.
-    mixup_epochs: [4, 34] # MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
+    mixup_epochs: [4, 14] # MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
                           # 이유: 학습 초중반에만 적용.
-    stop_epoch: 58    # 멀티스케일 학습 및 특정 증강 중단 에폭 (policy.epoch[2]와 일치)
+    stop_epoch: 18    # 멀티스케일 학습 및 특정 증강 중단 에폭 (policy.epoch[2]와 일치)
                       # 이유: 학습 후반에는 안정적인 학습을 위해 강한 증강 중단.
 
 val_dataloader:
@@ -109,9 +121,4 @@ PResNet:
 # 로그에 나온 값들(flat_epochs=34, no_aug_epochs=2, total_epochs=60, policy.epoch=[4,34,58], mixup_epochs=[4,34], stop_epoch=58)을 보면
 # 이 아래쪽 정의가 실제로 적용된 것으로 보입니다.
 
-
-# 예시 (30 에폭 기준):
-# --- 아래 설정은 현재 YAML 파일의 구조를 따르되, 값의 일관성 및 이유 설명 ---
-flat_epoch: 19      # 계산: 4(warmup_epoch 가정) + (30(epoches) - 4) / 2 = 17. rt_deim.yml은 4 + epoch//2 = 4 + 30//2 = 19. 현재 값 유지.
-no_aug_epoch: 3     # 학습 마지막에 증강 없이 학습할 에폭 수. 너무 짧으면 효과 미미. (예: epoches의 10% = 3 에폭)
 

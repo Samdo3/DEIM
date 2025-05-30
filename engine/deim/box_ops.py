@@ -10,8 +10,24 @@ from torchvision.ops.boxes import box_area
 
 def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
-    b = [(x_c - 0.5 * w.clamp(min=0.0)), (y_c - 0.5 * h.clamp(min=0.0)),
-         (x_c + 0.5 * w.clamp(min=0.0)), (y_c + 0.5 * h.clamp(min=0.0))]
+    # w와 h가 항상 양수가 되도록 clamp (0이 아닌 아주 작은 양수로)
+    # 또는 clamp 후에도 문제가 발생한다면, min/max를 사용한 변환 고려
+    w_clamped = w.clamp(min=1e-6) # 0이 아닌 아주 작은 값으로 clamp
+    h_clamped = h.clamp(min=1e-6)
+
+    x1 = x_c - 0.5 * w_clamped
+    y1 = y_c - 0.5 * h_clamped
+    x2 = x_c + 0.5 * w_clamped
+    y2 = y_c + 0.5 * h_clamped
+
+    # 만약 x1 > x2 또는 y1 > y2 가 되는 경우를 방지하기 위해 추가적인 처리
+    # (이것은 w_clamped, h_clamped가 양수이면 이론적으로 발생하지 않아야 함)
+    # b = [x1, y1, x2, y2]
+    # 더 안전하게:
+    b = [
+        torch.min(x1, x2), torch.min(y1, y2),
+        torch.max(x1, x2), torch.max(y1, y2)
+    ]
     return torch.stack(b, dim=-1)
 
 

@@ -72,10 +72,10 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
                     if name in known_local_transforms:
                         transform_class = known_local_transforms[name]
                         transform_instance = transform_class(**op_cfg)
-                        # print(f"     ### Transform (Local/Custom) @{type(transform_instance).__name__} ###")
+                        print(f"     ### Transform (Local/Custom) @{type(transform_instance).__name__} ###")
 
                     # 2. GLOBAL_CONFIG에서 찾아보기
-                    if transform_instance is None and name in GLOBAL_CONFIG and \
+                    elif transform_instance is None and name in GLOBAL_CONFIG and \
                        '_pymodule' in GLOBAL_CONFIG[name] and '_name' in GLOBAL_CONFIG[name]:
                         try:
                             transform_module_obj = GLOBAL_CONFIG[name]['_pymodule']
@@ -89,7 +89,7 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
                             pass # 실패 시 다음 단계로
 
                     # 3. torchvision.transforms.v2 (T)에서 찾아보기
-                    if transform_instance is None and hasattr(T, name):
+                    elif transform_instance is None and hasattr(T, name):
                         transform_class = getattr(T, name)
                         transform_instance = transform_class(**op_cfg)
                         print(f"     ### Transform (from torchvision.transforms.v2) @{type(transform_instance).__name__} ###")
@@ -100,7 +100,7 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
                     transforms.append(transform_instance)
                     if isinstance(op_cfg_orig, dict) and 'type' not in op_cfg_orig:
                          op_cfg_orig['type'] = name 
-                    print("     ### Transform @{} ###    ".format(type(transform_instance).__name__)) # 최종 cfg 로그와 중복
+                    # print("     ### Transform @{} ###    ".format(type(transform_instance).__name__)) # 최종 cfg 로그와 중복
                 elif isinstance(op_cfg, nn.Module):
                     transforms.append(op_cfg)
                 else:
@@ -178,9 +178,13 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
         current_img, current_target, current_dataset_instance = inputs
         
         for transform_obj in self.transforms:
+            before_boxes = current_target['boxes'].clone() if 'boxes' in current_target else None
             current_img, current_target = self._apply_single_transform(
                 transform_obj, current_img, current_target, current_dataset_instance
             )
+            after_boxes = current_target['boxes'].clone() if 'boxes' in current_target else None
+            # 디버그 출력
+            print(f"{type(transform_obj).__name__} -> #boxes={len(after_boxes)}, any neg? {(after_boxes[...,2:] < after_boxes[...,:2]).any()}")
         return current_img, current_target, current_dataset_instance
 
     def stop_epoch_forward(self, *inputs: Any) -> PyTuple[Any, Dict, Any]:

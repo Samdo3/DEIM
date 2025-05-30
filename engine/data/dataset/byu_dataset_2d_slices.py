@@ -147,96 +147,96 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
             print(f"{'훈련' if self.is_train else '검증'} 데이터셋: {len(active_tomo_ids_set)} 토모그램, {len(self.slice_items)} 개별 슬라이스 아이템")
             print(f"  첫 번째 slice_item 예시: {self.slice_items[0] if self.slice_items else '없음'}")
 
-        # ----- 샘플링 로직 추가 -----
-        if self.is_train:
-            import random
-            from collections import defaultdict
+        # # ----- 샘플링 로직 추가 -----
+        # if self.is_train:
+        #     import random
+        #     from collections import defaultdict
 
-            # 원하는 슬라이스 수 K
-            k_slices_per_tomo = 10  
-            # 원하는 양성:음성 비율 (예: 1:1)
-            # ratio = 양성 / (양성 + 음성) 이라고 가정
-            pos_ratio = 0.3
+        #     # 원하는 슬라이스 수 K
+        #     k_slices_per_tomo = 10  
+        #     # 원하는 양성:음성 비율 (예: 1:1)
+        #     # ratio = 양성 / (양성 + 음성) 이라고 가정
+        #     pos_ratio = 0.3
 
-            # 1) self.slice_items에 "양성 여부"를 추가로 표시
-            #    (이미 load_item에서 라벨을 확인하지만, 아래에서 편하게 확인하기 위해 미리 체크)
-            def is_positive_slice(tomo_id, slice_idx):
-                # df_labels_src에서 (z == slice_idx) 레코드가 하나라도 존재하면 양성
-                # z가 float형으로 들어있을 수도 있으므로 round/int 변환
-                subset = self.df_labels_src[
-                    (self.df_labels_src['tomo_id'] == tomo_id) &
-                    (self.df_labels_src['z'].round().astype(int) == slice_idx)
-                ]
-                return not subset.empty  # 비어있지 않으면 양성
+        #     # 1) self.slice_items에 "양성 여부"를 추가로 표시
+        #     #    (이미 load_item에서 라벨을 확인하지만, 아래에서 편하게 확인하기 위해 미리 체크)
+        #     def is_positive_slice(tomo_id, slice_idx):
+        #         # df_labels_src에서 (z == slice_idx) 레코드가 하나라도 존재하면 양성
+        #         # z가 float형으로 들어있을 수도 있으므로 round/int 변환
+        #         subset = self.df_labels_src[
+        #             (self.df_labels_src['tomo_id'] == tomo_id) &
+        #             (self.df_labels_src['z'].round().astype(int) == slice_idx)
+        #         ]
+        #         return not subset.empty  # 비어있지 않으면 양성
 
-            # (tomo_file_path, slice_idx, tomo_id) -> (tomo_file_path, slice_idx, tomo_id, is_positive)
-            slice_items_with_label = []
-            for (tomo_file_path, slice_idx, tomo_id) in self.slice_items:
-                slice_items_with_label.append(
-                    (tomo_file_path, slice_idx, tomo_id, is_positive_slice(tomo_id, slice_idx))
-                )
+        #     # (tomo_file_path, slice_idx, tomo_id) -> (tomo_file_path, slice_idx, tomo_id, is_positive)
+        #     slice_items_with_label = []
+        #     for (tomo_file_path, slice_idx, tomo_id) in self.slice_items:
+        #         slice_items_with_label.append(
+        #             (tomo_file_path, slice_idx, tomo_id, is_positive_slice(tomo_id, slice_idx))
+        #         )
 
-            # 2) 토모그램별로 양성/음성 리스트를 분리
-            slices_by_tomo = defaultdict(lambda: {"pos": [], "neg": []})
-            for (tomo_file_path, slice_idx, tomo_id, is_pos) in slice_items_with_label:
-                if is_pos:
-                    slices_by_tomo[tomo_id]["pos"].append((tomo_file_path, slice_idx, tomo_id))
-                else:
-                    slices_by_tomo[tomo_id]["neg"].append((tomo_file_path, slice_idx, tomo_id))
+        #     # 2) 토모그램별로 양성/음성 리스트를 분리
+        #     slices_by_tomo = defaultdict(lambda: {"pos": [], "neg": []})
+        #     for (tomo_file_path, slice_idx, tomo_id, is_pos) in slice_items_with_label:
+        #         if is_pos:
+        #             slices_by_tomo[tomo_id]["pos"].append((tomo_file_path, slice_idx, tomo_id))
+        #         else:
+        #             slices_by_tomo[tomo_id]["neg"].append((tomo_file_path, slice_idx, tomo_id))
 
-            new_slice_items = []
-            # 3) 각 토모그램에서 비율에 맞춰 샘플링
-            for tid, pos_neg_dict in slices_by_tomo.items():
-                all_pos = pos_neg_dict["pos"]
-                all_neg = pos_neg_dict["neg"]
+        #     new_slice_items = []
+        #     # 3) 각 토모그램에서 비율에 맞춰 샘플링
+        #     for tid, pos_neg_dict in slices_by_tomo.items():
+        #         all_pos = pos_neg_dict["pos"]
+        #         all_neg = pos_neg_dict["neg"]
                 
-                # 토모그램별 양성/음성 실제 개수
-                num_pos = len(all_pos)
-                num_neg = len(all_neg)
+        #         # 토모그램별 양성/음성 실제 개수
+        #         num_pos = len(all_pos)
+        #         num_neg = len(all_neg)
                 
-                if (num_pos + num_neg) == 0:
-                    continue  # 해당 토모그램이 슬라이스가 전혀 없는 경우(이상 케이스)
+        #         if (num_pos + num_neg) == 0:
+        #             continue  # 해당 토모그램이 슬라이스가 전혀 없는 경우(이상 케이스)
                 
-                # 여기서는 pos_ratio = 0.5 (즉, 1:1) 예시
-                # 일반화하려면 pos_ratio와 1-pos_ratio로 나누어 계산
-                target_pos = int(k_slices_per_tomo * pos_ratio)
-                target_neg = k_slices_per_tomo - target_pos
+        #         # 여기서는 pos_ratio = 0.5 (즉, 1:1) 예시
+        #         # 일반화하려면 pos_ratio와 1-pos_ratio로 나누어 계산
+        #         target_pos = int(k_slices_per_tomo * pos_ratio)
+        #         target_neg = k_slices_per_tomo - target_pos
                 
-                # 실제로는 토모그램별 양성 개수가 target_pos보다 부족할 수 있으므로 min() 처리
-                sampled_pos = random.sample(all_pos, min(target_pos, num_pos))
-                # 양성을 먼저 뽑고, 남은 것은 음성에서 뽑음
-                # (양성이 부족하면 남은 만큼 음성을 더 뽑을 수도 있지만, 코드 단순화 위해 일단은 target_neg 그대로 뽑음)
-                sampled_neg = random.sample(all_neg, min(target_neg, num_neg))
+        #         # 실제로는 토모그램별 양성 개수가 target_pos보다 부족할 수 있으므로 min() 처리
+        #         sampled_pos = random.sample(all_pos, min(target_pos, num_pos))
+        #         # 양성을 먼저 뽑고, 남은 것은 음성에서 뽑음
+        #         # (양성이 부족하면 남은 만큼 음성을 더 뽑을 수도 있지만, 코드 단순화 위해 일단은 target_neg 그대로 뽑음)
+        #         sampled_neg = random.sample(all_neg, min(target_neg, num_neg))
 
-                # 혹시 "양성이 부족해서" target_pos를 다 못 채운 경우 -> 남은만큼 음성으로 대체
-                # (사용 여부는 상황에 맞게 결정)
-                lack_pos = target_pos - len(sampled_pos)
-                if lack_pos > 0:
-                    # 음성 여유분이 있다면 추가로 뽑기
-                    neg_rest = list(set(all_neg) - set(sampled_neg))  # 아직 안 뽑힌 음성
-                    additional_neg_needed = min(lack_pos, len(neg_rest))
-                    if additional_neg_needed > 0:
-                        sampled_neg_extra = random.sample(neg_rest, additional_neg_needed)
-                        sampled_neg.extend(sampled_neg_extra)
+        #         # 혹시 "양성이 부족해서" target_pos를 다 못 채운 경우 -> 남은만큼 음성으로 대체
+        #         # (사용 여부는 상황에 맞게 결정)
+        #         lack_pos = target_pos - len(sampled_pos)
+        #         if lack_pos > 0:
+        #             # 음성 여유분이 있다면 추가로 뽑기
+        #             neg_rest = list(set(all_neg) - set(sampled_neg))  # 아직 안 뽑힌 음성
+        #             additional_neg_needed = min(lack_pos, len(neg_rest))
+        #             if additional_neg_needed > 0:
+        #                 sampled_neg_extra = random.sample(neg_rest, additional_neg_needed)
+        #                 sampled_neg.extend(sampled_neg_extra)
                 
-                # 반대로 "음성이 부족해서" target_neg를 다 못 채운 경우 -> 양성으로 대체해도 되는지?
-                # 필요하다면 비슷한 로직을 추가
+        #         # 반대로 "음성이 부족해서" target_neg를 다 못 채운 경우 -> 양성으로 대체해도 되는지?
+        #         # 필요하다면 비슷한 로직을 추가
                 
-                final_slices = sampled_pos + sampled_neg
+        #         final_slices = sampled_pos + sampled_neg
                 
-                # K개보다 적을 수도 있으므로, 다시 한 번 K개로 자르기
-                if len(final_slices) > k_slices_per_tomo:
-                    final_slices = random.sample(final_slices, k_slices_per_tomo)
+        #         # K개보다 적을 수도 있으므로, 다시 한 번 K개로 자르기
+        #         if len(final_slices) > k_slices_per_tomo:
+        #             final_slices = random.sample(final_slices, k_slices_per_tomo)
                 
-                new_slice_items.extend(final_slices)
+        #         new_slice_items.extend(final_slices)
 
-            old_count = len(self.slice_items)
-            self.slice_items = new_slice_items
-            new_count = len(self.slice_items)
-            print(f"[토모그램별 샘플링+비율] 전체 {old_count}개 슬라이스 -> {new_count}개 "
-                  f"(각 토모그램당 최대 {k_slices_per_tomo}개, 양성:음성 비율 {pos_ratio}:"
-                  f"{round(1.0 - pos_ratio,2)})")
-        # --------------------------------
+        #     old_count = len(self.slice_items)
+        #     self.slice_items = new_slice_items
+        #     new_count = len(self.slice_items)
+        #     print(f"[토모그램별 샘플링+비율] 전체 {old_count}개 슬라이스 -> {new_count}개 "
+        #           f"(각 토모그램당 최대 {k_slices_per_tomo}개, 양성:음성 비율 {pos_ratio}:"
+        #           f"{round(1.0 - pos_ratio,2)})")
+        # # --------------------------------
 
 
     def __len__(self):
