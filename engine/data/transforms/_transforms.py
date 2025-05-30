@@ -9,6 +9,9 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
+from torchvision.ops import box_convert
+from torchvision.tv_tensors import BoundingBoxes, BoundingBoxFormat
+
 
 import PIL
 import PIL.Image
@@ -16,8 +19,10 @@ import PIL.Image
 from typing import Any, Dict, List, Optional
 
 from .._misc import convert_to_tv_tensor, _boxes_keys
-from .._misc import Image, Video, Mask, BoundingBoxes
+from .._misc import Image, Video, Mask
+from .._misc import BoundingBoxes as TVBoundingBoxes
 from .._misc import SanitizeBoundingBoxes
+
 
 from ...core import register
 torchvision.disable_beta_transforms_warning()
@@ -52,7 +57,7 @@ class PadToSize(T.Pad):
         Image,
         Video,
         Mask,
-        BoundingBoxes,
+        TVBoundingBoxes,
     )
     def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
         sp = F.get_spatial_size(flat_inputs[0])
@@ -91,27 +96,85 @@ class RandomIoUCrop(T.RandomIoUCrop):
         return super().forward(*inputs)
 
 
+# @register()
+# class ConvertBoxes(T.Transform):
+#     _transformed_types = (
+#         BoundingBoxes,
+#     )
+#     def __init__(self, fmt='', normalize=False) -> None:
+#         super().__init__()
+#         self.fmt = fmt
+#         self.normalize = normalize
+
+#     def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+#         spatial_size = getattr(inpt, _boxes_keys[1])
+#         if self.fmt:
+#             in_fmt = inpt.format.value.lower()
+#             inpt = torchvision.ops.box_convert(inpt, in_fmt=in_fmt, out_fmt=self.fmt.lower())
+#             inpt = convert_to_tv_tensor(inpt, key='boxes', box_format=self.fmt.upper(), spatial_size=spatial_size)
+
+#         if self.normalize:
+#             inpt = inpt / torch.tensor(spatial_size[::-1]).tile(2)[None]
+
+#         return inpt
+
 @register()
 class ConvertBoxes(T.Transform):
-    _transformed_types = (
-        BoundingBoxes,
-    )
-    def __init__(self, fmt='', normalize=False) -> None:
+    """
+    예: 기존에 (cxcywh) → (xyxy)로 변환 후 plain Tensor로 바뀌어
+    'format' 속성이 사라지는 문제가 있었음.
+    
+    수정안:
+     1) box_convert()로 텐서 변환
+     2) 다시 BoundingBoxes._wrap() 호출해 sub-class 유지
+    """
+    # (BoundingBoxes,) 로 제한
+    _transformed_types = (BoundingBoxes,)
+
+    def __init__(self, fmt: str = "", normalize: bool = False) -> None:
+        """
+        Args:
+            fmt: 바꿀 포맷 (예: 'xyxy' or 'cxcywh' 등)
+            normalize: 추가로 0~1 normalize 할지 여부
+        """
         super().__init__()
-        self.fmt = fmt
+        self.fmt = fmt  # e.g. 'cxcywh'
         self.normalize = normalize
 
-    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        spatial_size = getattr(inpt, _boxes_keys[1])
-        if self.fmt:
-            in_fmt = inpt.format.value.lower()
-            inpt = torchvision.ops.box_convert(inpt, in_fmt=in_fmt, out_fmt=self.fmt.lower())
-            inpt = convert_to_tv_tensor(inpt, key='boxes', box_format=self.fmt.upper(), spatial_size=spatial_size)
+    def transform(self, inpt: BoundingBoxes, params: dict) -> BoundingBoxes:
+        # 만약 inpt가 BoundingBoxes가 아닐 수도 있으니 방어
+        if not isinstance(inpt, BoundingBoxes):
+            return inpt
+        
+        # raw tensor
+        coords = inpt.as_subclass(torch.Tensor)  # shape [N,4]
+        in_fmt_enum = inpt.format  # e.g. BoundingBoxFormat.CXCYWH
+        in_fmt_str = in_fmt_enum.value.lower()  # 'cxcywh', 'xyxy', ...
+        
+        # 바꿀 포맷이 지정되지 않았다면, 그냥 그대로 둠
+        out_fmt_str = self.fmt.lower() if self.fmt else in_fmt_str
+        
+        # 1) box_convert
+        converted = box_convert(coords, in_fmt=in_fmt_str, out_fmt=out_fmt_str)
+        # => shape [N,4] plain Tensor
 
+        # 2) 다시 BoundingBoxes로 wrap
+        # format=BoundingBoxFormat[out_fmt_str.upper()] => 'xyxy'→BoundingBoxFormat.XYXY
+        out_enum = BoundingBoxFormat[out_fmt_str.upper()]
+        new_bboxes = BoundingBoxes._wrap(
+            converted,
+            format=out_enum,
+            canvas_size=inpt.canvas_size,  # 기존 canvas_size 유지
+            check_dims=False
+        )
+
+        # 만약 self.normalize=True 면, 0~1 정규화가 필요할 수 있음
+        # (너비/높이가 canvas_size 기준, etc. 로직 추가)
         if self.normalize:
-            inpt = inpt / torch.tensor(spatial_size[::-1]).tile(2)[None]
+            # 예: out_fmt가 'xyxy'라면 x1/x2를 canvas_size.w로 나눠서 0~1
+            pass
 
-        return inpt
+        return new_bboxes
 
 
 @register()

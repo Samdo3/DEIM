@@ -40,9 +40,32 @@ from ._transforms import (
 from .mosaic import Mosaic
 
 # torchvision.tv_tensors에서 필요한 타입들을 가져옵니다.
-from torchvision.tv_tensors import Image as TVImage, BoundingBoxes
+from torchvision.tv_tensors import Image as TVImage
+from torchvision.tv_tensors import BoundingBoxes, BoundingBoxFormat
+from torchvision.ops import box_convert
+
 
 torchvision.disable_beta_transforms_warning()
+
+def _check_broken_boxes(boxes: BoundingBoxes) -> bool:
+    # boxes => raw tensor
+    coords = boxes.as_subclass(torch.Tensor)
+    # in_fmt
+    if boxes.format == BoundingBoxFormat.CXCYWH:
+        in_fmt = "cxcywh"
+    elif boxes.format == BoundingBoxFormat.XYXY:
+        in_fmt = "xyxy"
+    elif boxes.format == BoundingBoxFormat.XYWH:
+        in_fmt = "xywh"
+    else:
+        raise NotImplementedError(f"Unrecognized format {boxes.format}.")
+
+    out_fmt = "xyxy"
+    boxes_xyxy = box_convert(coords, in_fmt, out_fmt)  # shape [N,4]
+
+    x1, y1, x2, y2 = boxes_xyxy.unbind(-1)
+    broken = (x2 < x1).any() or (y2 < y1).any()
+    return bool(broken)
 
 
 @register()
@@ -176,81 +199,106 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
 
     def default_forward(self, *inputs: Any) -> PyTuple[Any, Dict, Any]:
         current_img, current_target, current_dataset_instance = inputs
-        
-        for transform_obj in self.transforms:
-            before_boxes = current_target['boxes'].clone() if 'boxes' in current_target else None
-            current_img, current_target = self._apply_single_transform(
-                transform_obj, current_img, current_target, current_dataset_instance
-            )
-            after_boxes = current_target['boxes'].clone() if 'boxes' in current_target else None
-            # 디버그 출력
-            print(f"{type(transform_obj).__name__} -> #boxes={len(after_boxes)}, any neg? {(after_boxes[...,2:] < after_boxes[...,:2]).any()}")
+
+        for i, transform_obj in enumerate(self.transforms, start=1):
+            transform_name = type(transform_obj).__name__
+
+            # --- BEFORE ---
+            if current_target is not None and "boxes" in current_target:
+                before_boxes = current_target["boxes"]
+                if isinstance(before_boxes, BoundingBoxes):
+                    broken_before = _check_broken_boxes(before_boxes)
+                    # [조건] "박스가 0개" AND "깨지지 않았다면" -> 로그 생략
+                    if broken_before:
+                        print(f"[default/Epoch=?][{i}/{transform_name}] BEFORE -> #boxes={len(before_boxes)}, broken? {broken_before}")
+
+            # 실제 transform
+            current_img, current_target = self._apply_single_transform(transform_obj, current_img, current_target, current_dataset_instance)
+
+            # --- AFTER ---
+            if current_target is not None and "boxes" in current_target:
+                after_boxes = current_target["boxes"]
+                if isinstance(after_boxes, BoundingBoxes):
+                    broken_after = _check_broken_boxes(after_boxes)
+                    # [조건] 마찬가지로 박스 0 or non-broken이면 생략
+                    if broken_after:
+                        print(f"[default/Epoch=?][{i}/{transform_name}] AFTER -> #boxes={len(after_boxes)}, broken? {broken_after}")
+                        if broken_after:
+                            print("!!! Broken bounding box => x2 < x1 or y2 < y1. Dumping boxes:")
+                            print(after_boxes)
+
         return current_img, current_target, current_dataset_instance
+
 
     def stop_epoch_forward(self, *inputs: Any) -> PyTuple[Any, Dict, Any]:
         img_orig, target_orig, dataset_instance = inputs
-        
         current_img = img_orig
         current_target = target_orig
 
-        # dataset_instance가 epoch 속성을 가지고 있는지 확인
         if not hasattr(dataset_instance, 'epoch'):
-            print(
-                "Warning: stop_epoch_forward expects dataset_instance to have 'epoch' attribute. "
-                "Applying default transforms for this sample."
-            )
+            print("Warning: stop_epoch_forward expects 'epoch' attribute.")
             return self.default_forward(img_orig, target_orig, dataset_instance)
         cur_epoch = dataset_instance.epoch
-        
-        # policy 설정 유효성 검사
-        if not (self.policy and isinstance(self.policy, dict) and \
-                'ops' in self.policy and 'epoch' in self.policy):
-            print("Warning: 'policy' or its required keys ('ops', 'epoch') are not correctly defined in Compose. "
-                  "Applying all transforms by default (stop_epoch_forward).")
+
+        if not (self.policy and isinstance(self.policy, dict) and 'ops' in self.policy and 'epoch' in self.policy):
+            print("Warning: 'policy' missing keys. Using default forward.")
             return self.default_forward(img_orig, target_orig, dataset_instance)
 
         policy_ops_names = self.policy['ops']
-        policy_epoch_thresholds = self.policy['epoch'] # 예: [4, 34, 58]
-        
-        # Mosaic 적용 여부 결정 (Stage 2 에서만 확률적으로)
+        policy_epoch_thresholds = self.policy['epoch']
+
+        # mosaic prob
         with_mosaic_this_iteration = False
         if isinstance(policy_epoch_thresholds, list) and len(policy_epoch_thresholds) == 3:
-            if policy_epoch_thresholds[0] <= cur_epoch < policy_epoch_thresholds[1]: 
-                # self.mosaic_prob는 YAML에서 Compose 초기화 시 전달됨
-                # (Compose.__init__에서 mosaic_prob이 제대로 설정되었는지 확인 필요)
-                current_mosaic_prob = getattr(self, 'mosaic_prob', 0.0) # 안전하게 접근
+            if policy_epoch_thresholds[0] <= cur_epoch < policy_epoch_thresholds[1]:
+                current_mosaic_prob = getattr(self, 'mosaic_prob', 0.0)
                 if current_mosaic_prob > 0 and random.random() <= current_mosaic_prob:
                     with_mosaic_this_iteration = True
-        
-        for transform_obj in self.transforms:
+
+        for i, transform_obj in enumerate(self.transforms, start=1):
             transform_name = type(transform_obj).__name__
             apply_this_transform = True
 
-            # 정책에 따라 특정 변환 건너뛰기 로직
             if transform_name in policy_ops_names:
                 if isinstance(policy_epoch_thresholds, list) and len(policy_epoch_thresholds) == 3:
-                    # Stage 1 (NoAug 기간) 또는 Stage 4 (NoAug 기간)인지 확인
-                    is_in_no_aug_period = (cur_epoch < policy_epoch_thresholds[0]) or \
-                                          (cur_epoch >= policy_epoch_thresholds[2]) # policy_epoch[2]는 마지막 NoAug 시작 에폭
+                    is_in_no_aug_period = (cur_epoch < policy_epoch_thresholds[0]) or (cur_epoch >= policy_epoch_thresholds[2])
                     if is_in_no_aug_period:
                         apply_this_transform = False
-                    else: # Stage 2 또는 Stage 3 (증강 적용 기간)
-                        if transform_name == 'Mosaic':
-                            if not with_mosaic_this_iteration:
-                                apply_this_transform = False
-                        # DEIM 원본 코드에서는 Mosaic과 RandomZoomOut/RandomIoUCrop을 동시에 적용하지 않음
-                        elif (transform_name == 'RandomZoomOut' or transform_name == 'RandomIoUCrop') and with_mosaic_this_iteration:
-                            apply_this_transform = False 
-                elif isinstance(policy_epoch_thresholds, int): # 단일 에폭 값 정책
+                    else:
+                        if transform_name == 'Mosaic' and not with_mosaic_this_iteration:
+                            apply_this_transform = False
+                        elif transform_name in ['RandomZoomOut','RandomIoUCrop'] and with_mosaic_this_iteration:
+                            apply_this_transform = False
+                elif isinstance(policy_epoch_thresholds, int):
                     if cur_epoch >= policy_epoch_thresholds:
                         apply_this_transform = False
-            
+
+            # --- BEFORE ---
+            if current_target is not None and "boxes" in current_target:
+                before_boxes = current_target["boxes"]
+                if isinstance(before_boxes, BoundingBoxes):
+                    broken_before = _check_broken_boxes(before_boxes)
+                    # [조건] "박스가 0개" AND "깨지지 않았다면" -> 로그 생략
+                    if broken_before:
+                        print(f"[default/Epoch=?][{i}/{transform_name}] BEFORE -> #boxes={len(before_boxes)}, broken? {broken_before}")
+
+            # 실제 transform
             if apply_this_transform:
                 # print(f"  Epoch {cur_epoch}: Applying {transform_name} ...")
-                current_img, current_target = self._apply_single_transform(
-                    transform_obj, current_img, current_target, dataset_instance
-                )
-        
+                current_img, current_target = self._apply_single_transform(transform_obj, current_img, current_target, dataset_instance)
+
+            # --- AFTER ---
+            if current_target is not None and "boxes" in current_target:
+                after_boxes = current_target["boxes"]
+                if isinstance(after_boxes, BoundingBoxes):
+                    broken_after = _check_broken_boxes(after_boxes)
+                    # [조건] 마찬가지로 박스 0 or non-broken이면 생략
+                    if broken_after:
+                        print(f"[default/Epoch=?][{i}/{transform_name}] AFTER -> #boxes={len(after_boxes)}, broken? {broken_after}")                    
+                        if broken_after:
+                            print("!!! Broken bounding box => x2<x1 or y2<y1")
+                            print(after_boxes)
+
         return current_img, current_target, dataset_instance
 
 

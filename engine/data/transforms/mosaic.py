@@ -76,9 +76,9 @@ class Mosaic(T.Transform):
                 index = 0
             cache.pop(index)
         sample_indices = random.choices(range(len(cache)), k=3)
-        mosaic_samples = [dict(img=cache[idx]["img"].copy(), labels=self._clone(cache[idx]["labels"])) for idx in
+        mosaic_samples = [dict(img=cache[idx]["img"].clone(), labels=self._clone(cache[idx]["labels"])) for idx in
                           sample_indices]  # sample 3 images
-        mosaic_samples = [dict(img=image.copy(), labels=self._clone(target))] + mosaic_samples
+        mosaic_samples = [dict(img=image.clone(), labels=self._clone(target))] + mosaic_samples
 
         get_size_func = F.get_size if hasattr(F, "get_size") else F.get_spatial_size
         sizes = [get_size_func(mosaic_samples[idx]["img"]) for idx in range(4)]
