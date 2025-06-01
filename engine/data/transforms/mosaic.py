@@ -14,6 +14,7 @@ from ...core import register
 
 from torchvision.transforms.v2.functional import to_pil_image, pil_to_tensor
 from torchvision.tv_tensors import Image as TVImage
+from torchvision.ops import box_convert
 
 
 
@@ -128,12 +129,39 @@ class Mosaic(T.Transform):
         # 흑백 => mode="L"
         merged_image = Image.new(mode="L", size=(max_width * 2, max_height * 2), color=0)
 
-        offsets = torch.tensor([[0, 0], [max_width, 0], [0, max_height], [max_width, max_height]]).repeat(1, 2)
+        offsets_tensor = torch.tensor([
+            [0, 0, 0, 0],
+            [max_width, 0, max_width, 0],
+            [0, max_height, 0, max_height],
+            [max_width, max_height, max_width, max_height],
+        ], dtype=torch.float32)
 
         mosaic_target = []
         for i, sample in enumerate(mosaic_samples):
             img = sample["img"]  # tv_tensor?
             target = sample["labels"]
+
+            # 1) 만약 CXCYWH -> XYXY 변환
+            boxes_cxcywh = target['boxes']  # BoundingBoxes(CXCYWH)
+
+            # (1) cxcywh -> xyxy 변환
+            boxes_xyxy_tensor = box_convert(
+                boxes_cxcywh.as_subclass(torch.Tensor),
+                in_fmt="cxcywh",
+                out_fmt="xyxy"
+            )
+
+            # 2) offset 더하기 (x1, y1, x2, y2 각각에)
+            # offsets_tensor[i] = [ox1, oy1, ox2, oy2] 식
+            boxes_xyxy_tensor += offsets_tensor[i]
+
+            # 다시 boxes_xyxy에 덮어쓰기
+            boxes_xyxy = boxes_xyxy_tensor
+
+            # 3) target['boxes']를 XYXY로 교체
+            #   -> 굳이 BoundingBoxes 객체로 다시 만들 수도 있고, 
+            #      나중 convert_to_tv_tensor에서 'xyxy'로 처리하므로 일단 tensor만 둬도 됨.
+            target['boxes'] = boxes_xyxy  # 이 상태가 xyxy tensor
 
             # 만약 img가 PIL Image가 아니라면, to_pil_image로 변환
             if not isinstance(img, Image.Image):
@@ -149,7 +177,7 @@ class Mosaic(T.Transform):
                     raise ValueError(f"Unexpected channels: {img.shape[0]}")
 
             merged_image.paste(img, tuple(placement_offsets[i]))
-            target['boxes'] = target['boxes'] + offsets[i]
+            # target['boxes'] = target['boxes'] + offsets[i]
             mosaic_target.append(target)
 
         merged_target = {}
@@ -168,7 +196,8 @@ class Mosaic(T.Transform):
                 merged_target[key] = values
         
         mosaic_image_tensor = pil_to_tensor(merged_image)  # shape = (C,H,W)
-
+        # === 수정: uint8 -> float ===
+        mosaic_image_tensor = mosaic_image_tensor.to(torch.float32).div(255.0)
 
         return mosaic_image_tensor, merged_target
 
@@ -204,7 +233,16 @@ class Mosaic(T.Transform):
             if key == "boxes":
                 # boxes는 offsets를 더해야 하므로
                 for i, t in enumerate(targets):
-                    values.append(t["boxes"] + offsets[i])
+                    boxes_cxcywh = t["boxes"]  # 예: cxcywh로 저장된 BoundingBoxes 혹은 Tensor
+                    boxes_xyxy_tensor = box_convert(
+                        boxes_cxcywh.as_subclass(torch.Tensor),
+                        in_fmt='cxcywh',
+                        out_fmt='xyxy'
+                    )    
+                    # 2) offset
+                    boxes_xyxy_tensor += offsets[i]
+                    # 3) 최종 보관
+                    values.append(boxes_xyxy_tensor)
             else:
                 # 그외 필드는 offset이 필요 없을 수도 있음
                 for i, t in enumerate(targets):
@@ -219,6 +257,8 @@ class Mosaic(T.Transform):
                 merged_target[key] = values  # 혹은 merged_target[key] = values[0]
 
         mosaic_image_tensor = pil_to_tensor(merged_image)  # shape = (C,H,W)
+        # === 수정: uint8 -> float ===
+        mosaic_image_tensor = mosaic_image_tensor.to(torch.float32).div(255.0)
 
         return mosaic_image_tensor, merged_target
 
@@ -236,14 +276,17 @@ class Mosaic(T.Transform):
         else:
             resized_imgs, resized_tgts, mh, mw = self.load_samples_from_dataset(image, target, dataset)
             mosaic_image, mosaic_target = self.create_mosaic_from_dataset(resized_imgs, resized_tgts, mh, mw)
+        
 
         # Clamp boxes and convert
         if 'boxes' in mosaic_target:
+            # mosaic_image.shape => (C, H, W)
+            h, w = mosaic_image.shape[-2], mosaic_image.shape[-1]
             mosaic_target['boxes'] = convert_to_tv_tensor(
                 mosaic_target['boxes'],
                 'boxes',
                 box_format='xyxy',
-                spatial_size=mosaic_image.size[::-1]
+                spatial_size=(h, w)
             )
         if 'masks' in mosaic_target:
             mosaic_target['masks'] = convert_to_tv_tensor(mosaic_target['masks'], 'masks')

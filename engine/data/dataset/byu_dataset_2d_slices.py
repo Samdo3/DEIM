@@ -268,6 +268,7 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
 
         boxes_cxcywh_list = []
         labels_list = []
+        areas_list = [] # <<< 면적을 저장할 리스트 추가
         if not motor_on_this_slice.empty:
             for _, motor_row in motor_on_this_slice.iterrows():
                 # train_labels.csv의 y, x는 이미 512x512 기준 좌표
@@ -278,6 +279,7 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
                     h = float(self.virtual_box_h)
                     boxes_cxcywh_list.append([cx, cy, w, h])
                     labels_list.append(0) # 모터 클래스 ID = 0
+                    areas_list.append(w * h) # <<< 박스 면적 추가
 
         target = {}
         # target['spatial_size']는 BoundingBoxes 객체 생성 시 사용될 이미지의 실제 크기 (H,W)
@@ -299,6 +301,13 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
             target['labels'] = torch.tensor(labels_list, dtype=torch.long) # (N,)
         else:
             target['labels'] = torch.empty((0,), dtype=torch.long) # (0,)
+
+        # --- 'area' 키 추가 ---
+        if areas_list:
+            target['area'] = torch.tensor(areas_list, dtype=torch.float32)
+        else:
+            target['area'] = torch.empty((0,), dtype=torch.float32) # 박스가 없으면 빈 area 텐서
+        # --- 'area' 키 추가 끝 ---
 
         target['image_id'] = torch.tensor([idx]) # 배치 내 고유 ID (DataLoader에서 사용)
         target['tomo_id'] = tomo_id # 평가 시 사용

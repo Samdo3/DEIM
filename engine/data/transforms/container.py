@@ -247,6 +247,9 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
         policy_ops_names = self.policy['ops']
         policy_epoch_thresholds = self.policy['epoch']
 
+        # print(f"DEBUG: stop_epoch_forward - Current Epoch: {cur_epoch}, Policy Epochs: {policy_epoch_thresholds}, Policy Ops: {policy_ops_names}")
+
+
         # mosaic prob
         with_mosaic_this_iteration = False
         if isinstance(policy_epoch_thresholds, list) and len(policy_epoch_thresholds) == 3:

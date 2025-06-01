@@ -20,7 +20,7 @@ eval_spatial_size: [512, 512] # H, W - 2D 모델이므로
 val_freq: 5  # 10에폭마다 검증
 flat_epoch: 14     # 계산: 4(warmup_epoch 가정) + (30(epoches) - 4) / 2 = 17. rt_deim.yml은 4 + epoch//2 = 4 + 30//2 = 19. 현재 값 유지.
 no_aug_epoch: 2     # 학습 마지막에 증강 없이 학습할 에폭 수. 너무 짧으면 효과 미미. (예: epoches의 10% = 3 에폭)
-warmup_iter: 300
+warmup_iter: 1000
 # 학습 에폭, 배치 크기 등은 rt_optimizer.yml 또는 여기서 조정 가능
 epoches: 20 # 예시
 train_dataloader:
@@ -30,42 +30,39 @@ train_dataloader:
   dataset:
     transforms:
       ops:
-        # 1) Mosaic
-        - {type: Mosaic, output_size: 512, probability: 0.5, fill_value: 114}
-        
-        # 2) Photometric
+        # 1) Mosaic (확률 낮춤)
+        - {type: Mosaic, output_size: 512, probability: 0.2, fill_value: 114}
+
+        # 2) PhotometricDistort (색/명암 변환)
         - {type: RandomPhotometricDistort, p: 0.5}
         
-        # # 3) ZoomOut
+        # # # 3) ZoomOut
         # - {type: RandomZoomOut, fill: 114, p: 0.5}
         
-        # # 4) IoUCrop
+        # # # 4) IoUCrop
         # - {type: RandomIoUCrop, p: 0.8}
         
-        # 5) Sanitize(중간)
-        #    min_size=2 정도로 올려서, 너비/높이 2px 미만인 박스는 제거
-        - {type: SanitizeBoundingBoxes, min_size: 2}
-        
-        # 6) HorizontalFlip
+        # 5) HorizontalFlip
         - {type: RandomHorizontalFlip, p: 0.5}
-        
-        # 7) Resize
+
+        # 6) Resize
         - {type: Resize, size: [512, 512]}
         
-        # 8) Sanitize(최종)
+        # 7) SanitizeBoundingBoxes (최종 한 번)
         - {type: SanitizeBoundingBoxes, min_size: 2}
         
-        # 9) ConvertBoxes + Normalize
+        # 8) ConvertBoxes + Normalize
         - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
         - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+
       policy: # 증강 적용/중단 시점 (rt_deim.yml의 값을 현재 epoches에 맞게 조정)
         name: stop_epoch # rt_deim.yml의 policy.name을 명시적으로 가져옴
-        epoch: [1, 14, 18] 
+        epoch: [4, 14, 18] # [4, 14, 18]
                            # 계산: [warmup 종료 시점 근처, flat_epoch, epoches - no_aug_epoch]
                            # rt_deim.yml의 epoch: [4, 29, 50]은 epoches=58 기준이었음.
                            # 이 값을 현재 설정된 epoches, flat_epoch, no_aug_epoch에 맞게 재계산 필요.
-        ops: ['Mosaic', 'RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop'] # rt_deim.yml의 policy.ops
-      mosaic_prob: 0.5 # rt_deim.yml 값 사용 또는 여기서 오버라이드
+        ops: ['Mosaic','RandomPhotometricDistort'] # rt_deim.yml의 policy.ops
+      mosaic_prob: 0.2 # rt_deim.yml 값 사용 또는 여기서 오버라이드
   collate_fn: # rt_deim.yml 설정을 기반으로 하되, BYU 데이터에 맞게 조정
     # type: BatchImageCollateFunction 은 rt_deim.yml 에서 상속됨
     base_size: 512 # 입력 슬라이스 크기와 일치
@@ -77,7 +74,7 @@ train_dataloader:
                    # 만약 단일 스케일로 학습하고 싶다면 이 상태 유지.
     mixup_prob: 0.1 # MixUp 확률 (기본 0.5에서 줄여봄. BYU 데이터 특성상 과도한 Mixup이 불리할 수 있음)
                     # 이유: 실험적으로 조절.
-    mixup_epochs: [4, 14] # MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
+    mixup_epochs: [4, 11] #  [4, 14] MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
                           # 이유: 학습 초중반에만 적용.
     stop_epoch: 18    # 멀티스케일 학습 및 특정 증강 중단 에폭 (policy.epoch[2]와 일치)
                       # 이유: 학습 후반에는 안정적인 학습을 위해 강한 증강 중단.
