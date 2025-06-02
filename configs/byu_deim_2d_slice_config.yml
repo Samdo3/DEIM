@@ -82,7 +82,7 @@ train_dataloader:
                    # 만약 단일 스케일로 학습하고 싶다면 이 상태 유지.
     mixup_prob: 0.1 # MixUp 확률 (기본 0.5에서 줄여봄. BYU 데이터 특성상 과도한 Mixup이 불리할 수 있음)
                     # 이유: 실험적으로 조절.
-    mixup_epochs: [4, 11] #  [4, 14] MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
+    mixup_epochs: [4, 14] #  [4, 14] MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
                           # 이유: 학습 초중반에만 적용.
     stop_epoch: 18    # 멀티스케일 학습 및 특정 증강 중단 에폭 (policy.epoch[2]와 일치)
                       # 이유: 학습 후반에는 안정적인 학습을 위해 강한 증강 중단.
