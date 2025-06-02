@@ -30,6 +30,8 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+RT-DETR-main/D-FINE/weight/hgnetv2/PPHGNetV2_B5_stage1.pth
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.

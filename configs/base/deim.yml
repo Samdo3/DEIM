@@ -2,27 +2,28 @@
 train_dataloader: 
   dataset: 
     transforms:
-      ops:
-        - {type: Mosaic, output_size: 320, rotation_range: 10, translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5],
-           probability: 1.0, fill_value: 0, use_cache: False, max_cached_images: 50, random_pop: True}
-        - {type: RandomPhotometricDistort, p: 0.5}
-        - {type: RandomZoomOut, fill: 0}
-        - {type: RandomIoUCrop, p: 0.8}
-        - {type: SanitizeBoundingBoxes, min_size: 1}
-        - {type: RandomHorizontalFlip}
-        - {type: Resize, size: [640, 640], }
-        - {type: SanitizeBoundingBoxes, min_size: 1}
-        - {type: ConvertPILImage, dtype: 'float32', scale: True}
-        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      ops: []
+        # - {type: Mosaic, output_size: 320, rotation_range: 10, translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5],
+        #    probability: 1.0, fill_value: 0, use_cache: False, max_cached_images: 50, random_pop: True}
+        # - {type: RandomPhotometricDistort, p: 0.5}
+        # - {type: RandomZoomOut, fill: 0}
+        # - {type: RandomIoUCrop, p: 0.8}
+        # - {type: SanitizeBoundingBoxes, min_size: 1}
+        # - {type: RandomHorizontalFlip}
+        # - {type: Resize, size: [640, 640], }
+        # - {type: SanitizeBoundingBoxes, min_size: 1}
+        # - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        # - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
       policy:
-        epoch: [4, 29, 50]   # list 
+        name: stop_epoch # <--- 'name' 키와 값 추가
+        epoch: [4, 14, 18]   # list 
         ops: ['Mosaic', 'RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
-      mosaic_prob: 0.5
+      mosaic_prob: 0.2
 
   collate_fn:
-    mixup_prob: 0.5
-    mixup_epochs: [4, 29]
-    stop_epoch: 50    # epoch in [72, ~) stop `multiscales`
+    mixup_prob: 0.1
+    mixup_epochs: [4, 14]
+    stop_epoch: 18    # epoch in [72, ~) stop `multiscales`
 
 # Unfreezing BN
 HGNetv2:

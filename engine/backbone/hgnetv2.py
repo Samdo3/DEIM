@@ -441,7 +441,7 @@ class HGNetv2(nn.Module):
                  freeze_at=0,
                  freeze_norm=True,
                  pretrained=True,
-                 local_model_dir='weight/hgnetv2/'):
+                 local_model_dir='./RT-DETR-main/D-FINE/weight/hgnetv2/'):
         super().__init__()
         self.use_lab = use_lab
         self.return_idx = return_idx
@@ -489,27 +489,51 @@ class HGNetv2(nn.Module):
         if pretrained:
             RED, GREEN, RESET = "\033[91m", "\033[92m", "\033[0m"
             try:
+                # --- 수정된 부분: 분산 환경인지 먼저 확인 ---
+                is_distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
+                # --- 수정 끝 ---
                 model_path = local_model_dir + 'PPHGNetV2_' + name + '_stage1.pth'
                 if os.path.exists(model_path):
                     state = torch.load(model_path, map_location='cpu')
                     print(f"Loaded stage1 {name} HGNetV2 from local file.")
                 else:
-                    # If the file doesn't exist locally, download from the URL
-                    if torch.distributed.get_rank() == 0:
-                        print(GREEN + "If the pretrained HGNetV2 can't be downloaded automatically. Please check your network connection." + RESET)
-                        print(GREEN + "Please check your network connection. Or download the model manually from " + RESET + f"{download_url}" + GREEN + " to " + RESET + f"{local_model_dir}." + RESET)
-                        state = torch.hub.load_state_dict_from_url(download_url, map_location='cpu', model_dir=local_model_dir)
-                        torch.distributed.barrier()
-                    else:
-                        torch.distributed.barrier()
-                        state = torch.load(local_model_dir)
+                    # --- 수정된 부분: 메인 프로세스에서만 다운로드 시도 ---
+                    if not is_distributed or torch.distributed.get_rank() == 0:
+                        # 메인 프로세스만 다운로드하도록 하거나, 혹은 다운로드 후 다른 프로세스는 로드만 하도록
+                        # 여기서는 우선 메인 프로세스만 다운로드 시도하는 것으로 가정
+                        print(f"Local file {local_model_dir} not found. Attempting to download from {download_url}...")
+                        state = torch.hub.load_state_dict_from_url(download_url, map_location='cpu', model_dir=os.path.dirname(local_model_dir)) # model_dir은 디렉토리여야 함
+                        if not is_distributed or torch.distributed.get_rank() == 0: # 다운로드 성공 후 메인 프로세스만 저장 시도 (선택적)
+                            try:
+                                if not os.path.exists(os.path.dirname(local_model_dir)):
+                                    os.makedirs(os.path.dirname(local_model_dir), exist_ok=True)
+                                torch.save(state, local_model_dir)
+                                print(f"Downloaded and saved {name} HGNetV2 to {local_model_dir}")
+                            except Exception as e_save:
+                                print(f"Warning: Could not save downloaded model to {local_model_dir}: {e_save}")
+                    elif is_distributed: # 다른 분산 프로세스들은 잠시 대기 (메인 프로세스가 다운로드/저장할 때까지)
+                        print(f"Rank {torch.distributed.get_rank()} waiting for main process to download/load model...")
+                        torch.distributed.barrier() # 모든 프로세스가 여기서 동기화될 때까지 기다림
+                        # 메인 프로세스가 파일을 저장했다면, 다른 프로세스들은 이제 로컬 파일에서 로드 시도
+                        if os.path.exists(local_model_dir):
+                            state = torch.load(local_model_dir, map_location='cpu')
+                            print(f"Rank {torch.distributed.get_rank()} loaded {name} HGNetV2 from local file after barrier.")
+                        else:
+                            # 이 경우는 문제가 있는 상황 (메인도 다운로드 실패 또는 저장 실패)
+                            raise RuntimeError(f"Rank {torch.distributed.get_rank()}: Main process failed to provide the model file {local_model_dir}.")
+                    else: # 분산 환경 아닌데 파일 없는 경우 (이론상 위에서 처리됨)
+                         raise FileNotFoundError(f"Model file not found at {local_model_dir} and not in distributed mode to wait for download.")
+                    # --- 수정 끝 ---
 
                     print(f"Loaded stage1 {name} HGNetV2 from URL.")
 
                 self.load_state_dict(state)
 
             except (Exception, KeyboardInterrupt) as e:
-                if torch.distributed.get_rank() == 0:
+                # --- 수정된 부분: 분산 환경인지 먼저 확인 ---
+                is_distributed_exception = torch.distributed.is_available() and torch.distributed.is_initialized()
+                # --- 수정 끝 ---
+                if not is_distributed_exception or torch.distributed.get_rank() == 0: # 메인 프로세스만 에러 메시지 출력
                     print(f"{str(e)}")
                     logging.error(RED + "CRITICAL WARNING: Failed to load pretrained HGNetV2 model" + RESET)
                     logging.error(GREEN + "Please check your network connection. Or download the model manually from " \
