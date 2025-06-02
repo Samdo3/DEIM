@@ -248,14 +248,8 @@ class BatchImageCollateFunction(BaseCollateFunction):
                 else:
                     updated_targets[i]["mixup"] = updated_targets[i]["mixup"].new_empty((0,))
 
-            # 6) XYXY -> CXCYWH 재변환
+            # 6) XYXY -> "xywh" 재변환
             pixel_cxcywh = box_convert(merged_xyxy, in_fmt="xyxy", out_fmt="xywh")
-
-            # normalize
-            pixel_cxcywh[..., 0] /= 512
-            pixel_cxcywh[..., 1] /= 512
-            pixel_cxcywh[..., 2] /= 512
-            pixel_cxcywh[..., 3] /= 512
 
             # 7) 다시 BoundingBoxes로
             #    (format=BoundingBoxFormat.CXCYWH, canvas_size=(H,W) 등)
@@ -294,7 +288,7 @@ class BatchImageCollateFunction(BaseCollateFunction):
                 boxes_draw = t['boxes']
                 if boxes_draw.numel() > 0:
                     boxes_xyxy_draw = box_convert(
-                        boxes_draw.as_subclass(torch.Tensor), "cxcywh", "xyxy"
+                        boxes_draw.as_subclass(torch.Tensor), "xywh", "xyxy"
                     )
                     # scale to (H,W)
                     # x1, y1, x2, y2 = ...
@@ -321,18 +315,18 @@ class BatchImageCollateFunction(BaseCollateFunction):
         images = torch.cat([x[0][None] for x in items], dim=0)
         targets = [x[1] for x in items]
 
-        if self.epoch < 2 and random.random()<0.1:
-            # (A) debug: batch별 박스 총합
-            total_boxes = sum(t["boxes"].shape[0] for t in targets)
-            print(f"[DEBUG] Collate => total GT boxes in this batch = {total_boxes}")
+        # if self.epoch < 2 and random.random()<0.1:
+        #     # (A) debug: batch별 박스 총합
+        #     total_boxes = sum(t["boxes"].shape[0] for t in targets)
+        #     print(f"[DEBUG] Collate => total GT boxes in this batch = {total_boxes}")
 
         # Mixup
         images, targets = self.apply_mixup(images, targets)
 
         # (B) debug: mixup 후 box 총합
-        total_boxes_after = sum(t["boxes"].shape[0] for t in targets)
-        if total_boxes_after>0:
-            print(f"[DEBUG] After MixUp => total GT boxes = {total_boxes_after}")
+        # total_boxes_after = sum(t["boxes"].shape[0] for t in targets)
+        # if total_boxes_after>0:
+        #     print(f"[DEBUG] After MixUp => total GT boxes = {total_boxes_after}")
 
         if self.scales is not None and self.epoch < self.stop_epoch:
             # sz = random.choice(self.scales)

@@ -138,7 +138,7 @@ class ConvertBoxes(T.Transform):
             normalize: 추가로 0~1 normalize 할지 여부
         """
         super().__init__()
-        self.fmt = fmt  # e.g. 'cxcywh'
+        self.fmt = fmt  # 바꿀 타겟 포맷(e.g. 'cxcywh', 'xyxy', 등)
         self.normalize = normalize
 
     def transform(self, inpt: BoundingBoxes, params: dict) -> BoundingBoxes:
@@ -168,14 +168,79 @@ class ConvertBoxes(T.Transform):
             check_dims=False
         )
 
-        # 만약 self.normalize=True 면, 0~1 정규화가 필요할 수 있음
-        # (너비/높이가 canvas_size 기준, etc. 로직 추가)
+         # (추가 구현) normalize=True일 때 정규화 처리
+        # → 실제로는 아래처럼 별도 로직을 넣어줘야 한다.
         if self.normalize:
-            # 예: out_fmt가 'xyxy'라면 x1/x2를 canvas_size.w로 나눠서 0~1
-            pass
+            # 예시 구현
+            new_bboxes = self._apply_normalize(new_bboxes)
 
         return new_bboxes
 
+    def _apply_normalize(self, bboxes: BoundingBoxes) -> BoundingBoxes:
+        """ bounding boxes를 [0..1] 범위로 정규화 """
+
+        # bboxes는 이미 self.fmt 대로 변환된 상태.
+        # bboxes.format 은 BoundingBoxFormat.XYXY / .XYWH / .CXCYWH 중 하나
+        # bboxes.canvas_size = (H, W)  튜플
+        H, W = bboxes.canvas_size
+        data_tensor = bboxes.as_subclass(torch.Tensor)  # shape [N,4]
+
+        if bboxes.format == BoundingBoxFormat.XYXY:
+            # x1,y1,x2,y2
+            x1, y1, x2, y2 = data_tensor.unbind(-1)
+            # 폭,높이가 0이 되지 않도록 clamp
+            # x1 = x1.clamp_(0, W)  # 필요하다면 clamp
+            # ...
+            # 정규화
+            x1 = x1 / W
+            x2 = x2 / W
+            y1 = y1 / H
+            y2 = y2 / H
+            normalized_data = torch.stack([x1,y1,x2,y2], dim=-1)
+
+            # 다시 BoundingBoxes로
+            out_bboxes = BoundingBoxes._wrap(
+                normalized_data,
+                format=BoundingBoxFormat.XYXY,
+                canvas_size=(1,1),  # 0~1 범위이므로 (1,1)로 설정 (혹은 (H,W) 그대로 두기도 함)
+                check_dims=False
+            )
+            return out_bboxes
+
+        elif bboxes.format == BoundingBoxFormat.XYWH:
+            # x,y,w,h
+            x, y, w, h = data_tensor.unbind(-1)
+            x = x / W
+            w = w / W
+            y = y / H
+            h = h / H
+            normalized_data = torch.stack([x,y,w,h], dim=-1)
+            out_bboxes = BoundingBoxes._wrap(
+                normalized_data,
+                format=BoundingBoxFormat.XYWH,
+                canvas_size=(1,1),
+                check_dims=False
+            )
+            return out_bboxes
+
+        elif bboxes.format == BoundingBoxFormat.CXCYWH:
+            # cx,cy,w,h
+            cx, cy, bw, bh = data_tensor.unbind(-1)
+            cx /= W
+            bw /= W
+            cy /= H
+            bh /= H
+            normalized_data = torch.stack([cx,cy,bw,bh], dim=-1)
+            out_bboxes = BoundingBoxes._wrap(
+                normalized_data,
+                format=BoundingBoxFormat.CXCYWH,
+                canvas_size=(1,1),
+                check_dims=False
+            )
+            return out_bboxes
+        else:
+            # 혹시 모르는 포맷
+            return bboxes
 
 @register()
 class ConvertPILImage(T.Transform):
