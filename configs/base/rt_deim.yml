@@ -47,7 +47,7 @@ no_aug_epoch: 8
 ## Our Loss
 DEIMCriterion:
   matcher: HungarianMatcher # HungarianMatcher 사용 명시
-  weight_dict: {loss_ce: 1, loss_bbox: 5, loss_giou: 2} # 손실 가중치 (2D 박스 기준)
+  weight_dict: {loss_ce: 1, loss_bbox: 1, loss_giou: 2} # 손실 가중치 (2D 박스 기준)
   losses: ['labels', 'boxes'] # 계산할 손실 종류
   alpha: 0.25 # Focal Loss alpha (VFL/MAL 내부에서 사용될 수 있음)
   gamma: 2.0  # Focal Loss gamma

@@ -203,6 +203,10 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
         for i, transform_obj in enumerate(self.transforms, start=1):
             transform_name = type(transform_obj).__name__
 
+            # before
+            if "boxes" in current_target:
+                print(f"[DEBUG] Before {type(transform_obj).__name__}, #boxes={current_target['boxes'].shape[0]}")
+
             # --- BEFORE ---
             if current_target is not None and "boxes" in current_target:
                 before_boxes = current_target["boxes"]
@@ -214,6 +218,10 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
 
             # 실제 transform
             current_img, current_target = self._apply_single_transform(transform_obj, current_img, current_target, current_dataset_instance)
+
+            # after
+            if "boxes" in current_target:
+                print(f"[DEBUG] After {type(transform_obj).__name__}, #boxes={current_target['boxes'].shape[0]}")
 
             # --- AFTER ---
             if current_target is not None and "boxes" in current_target:
@@ -277,13 +285,17 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
                         apply_this_transform = False
 
             # --- BEFORE ---
-            if current_target is not None and "boxes" in current_target:
+            if current_target and "boxes" in current_target:
                 before_boxes = current_target["boxes"]
                 if isinstance(before_boxes, BoundingBoxes):
                     broken_before = _check_broken_boxes(before_boxes)
-                    # [조건] "박스가 0개" AND "깨지지 않았다면" -> 로그 생략
-                    if broken_before:
-                        print(f"[default/Epoch=?][{i}/{transform_name}] BEFORE -> #boxes={len(before_boxes)}, broken? {broken_before}")
+
+                    # 박스 개수:
+                    num_before = len(before_boxes)
+
+                    # if (num_before > 0 and broken_before):
+                    if (broken_before):
+                        print(f"[Epoch=?][{i}/{transform_name}] BEFORE -> #boxes={num_before}, broken? {broken_before}")
 
             # 실제 transform
             if apply_this_transform:
@@ -291,15 +303,19 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
                 current_img, current_target = self._apply_single_transform(transform_obj, current_img, current_target, dataset_instance)
 
             # --- AFTER ---
-            if current_target is not None and "boxes" in current_target:
+            if current_target and "boxes" in current_target:
                 after_boxes = current_target["boxes"]
                 if isinstance(after_boxes, BoundingBoxes):
                     broken_after = _check_broken_boxes(after_boxes)
-                    # [조건] 마찬가지로 박스 0 or non-broken이면 생략
-                    if broken_after:
-                        print(f"[default/Epoch=?][{i}/{transform_name}] AFTER -> #boxes={len(after_boxes)}, broken? {broken_after}")                    
+                    num_after = len(after_boxes)
+
+                    # 마찬가지로 조건문
+                    # if (num_after != num_before) or (broken_after):
+                    if (broken_after):
+                        print(f"[Epoch=?][{i}/{transform_name}] AFTER -> #boxes={num_after}, broken? {broken_after}")
+                        # 추가로 상세 정보
                         if broken_after:
-                            print("!!! Broken bounding box => x2<x1 or y2<y1")
+                            print("!!! Broken bounding box => x2 < x1 or y2 < y1")
                             print(after_boxes)
 
         return current_img, current_target, dataset_instance

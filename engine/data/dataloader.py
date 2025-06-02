@@ -148,10 +148,11 @@ class BatchImageCollateFunction(BaseCollateFunction):
                 - updated_targets: mixup된 타겟 리스트. 'boxes'는 다시 CXCYWH로 복귀.
         """
 
-        # 1) MixUp 적용 여부 결정
-        #    - epoch이 mixup_epochs 범위에 들어가는지
-        #    - random() < self.mixup_prob 인지
-        if not (random.random() < self.mixup_prob and self.mixup_epochs[0] <= self.epoch < self.mixup_epochs[-1]):
+        # 1) MixUp 적용 여부
+        if not (
+            random.random() < self.mixup_prob
+            and self.mixup_epochs[0] <= self.epoch < self.mixup_epochs[-1]
+        ):
             return images, targets
 
         # 2) mixup ratio
@@ -162,67 +163,62 @@ class BatchImageCollateFunction(BaseCollateFunction):
         images = images.roll(shifts=1, dims=0).mul_(1.0 - beta).add_(images.mul(beta))
 
         # 4) 타겟 mixup
-        shifted_targets = targets[-1:] + targets[:-1]  # roll
+        shifted_targets = targets[-1:] + targets[:-1]
         updated_targets = deepcopy(targets)
 
         for i in range(len(targets)):
-            # 원본 boxes (CXCYWH)
-            if 'boxes' not in updated_targets[i]:
-                continue  # 박스가 없는 경우 건너뛰기 (필요시)
-            boxes_cur_cxcywh = updated_targets[i]['boxes']
-
-            # 상대편 boxes
-            if 'boxes' not in shifted_targets[i]:
-                # 상대편에 아예 boxes가 없는 경우 => 그냥 skip
+            if "boxes" not in updated_targets[i] or "boxes" not in shifted_targets[i]:
                 continue
-            boxes_shifted_cxcywh = shifted_targets[i]['boxes']
 
-            # BoundingBoxes -> torch.Tensor로 접근
-            #  (BoundingBoxes.as_subclass(torch.Tensor) or .to_tensor() 등 사용)
-            boxes_cur_tensor = boxes_cur_cxcywh.as_subclass(torch.Tensor)
-            boxes_shifted_tensor = boxes_shifted_cxcywh.as_subclass(torch.Tensor)
+            # (A) mosaic가 준 boxes는 "픽셀 XYXY"라고 가정
+            #     => as_subclass(torch.Tensor)로 가져오기
+            boxes_cur_xyxy = updated_targets[i]["boxes"].as_subclass(torch.Tensor)
+            boxes_shifted_xyxy = shifted_targets[i]["boxes"].as_subclass(torch.Tensor)
 
-            # CXCYWH(정규화) -> XYXY(정규화)
-            # box_convert()는 box_ops or torchvision.ops.box_convert를 사용
-            # in_fmt="cxcywh" / out_fmt="xyxy"
-            boxes_cur_xyxy = box_convert(boxes_cur_tensor, in_fmt="cxcywh", out_fmt="xyxy")
-            boxes_shifted_xyxy = box_convert(boxes_shifted_tensor, in_fmt="cxcywh", out_fmt="xyxy")
+            cur_xyxy = box_convert(boxes_cur_xyxy, in_fmt="xywh", out_fmt="xyxy")  # => pixel-based
+            shift_xyxy = box_convert(boxes_shifted_xyxy, in_fmt="xywh", out_fmt="xyxy")
+
+            # print("[DEBUG] cur_xyxy:", cur_xyxy.shape, cur_xyxy[:5])
+            # print("[DEBUG] shift_xyxy:", shift_xyxy.shape, shift_xyxy[:5])
 
             # concat
-            merged_xyxy = torch.cat([boxes_cur_xyxy, boxes_shifted_xyxy], dim=0)
+            merged_xyxy = torch.cat([cur_xyxy, shift_xyxy], dim=0)
+            # print("[DEBUG] merged_xyxy(before valid):", merged_xyxy.shape, merged_xyxy[:5])
 
             # labels
-            if 'labels' in updated_targets[i] and 'labels' in shifted_targets[i]:
-                updated_targets[i]['labels'] = torch.cat([
-                    updated_targets[i]['labels'],
-                    shifted_targets[i]['labels']
+            if "labels" in updated_targets[i] and "labels" in shifted_targets[i]:
+                updated_targets[i]["labels"] = torch.cat([
+                    updated_targets[i]["labels"],
+                    shifted_targets[i]["labels"]
                 ], dim=0)
-            # area
-            if 'area' in updated_targets[i] and 'area' in shifted_targets[i]:
-                updated_targets[i]['area'] = torch.cat([
-                    updated_targets[i]['area'],
-                    shifted_targets[i]['area']
+            if "area" in updated_targets[i] and "area" in shifted_targets[i]:
+                updated_targets[i]["area"] = torch.cat([
+                    updated_targets[i]["area"],
+                    shifted_targets[i]["area"]
                 ], dim=0)
 
             # mixup ratio
-            updated_targets[i]['mixup'] = torch.tensor(
-                [beta]*boxes_cur_xyxy.shape[0] + [(1.0 - beta)]*boxes_shifted_xyxy.shape[0],
+            N_cur = boxes_cur_xyxy.shape[0]
+            N_shifted = boxes_shifted_xyxy.shape[0]
+            ratio_tensor = torch.tensor(
+                [beta]*N_cur + [(1.0 - beta)]*N_shifted,
                 dtype=torch.float32
             )
+            updated_targets[i]["mixup"] = ratio_tensor
 
             # 5) sanitize
-            #    x1, y1, x2, y2 = merged_xyxy.unbind(-1)
-            #    w, h 계산
-            #    valid 마스크로 filtering
+            #   => 픽셀 좌표 전제로 (0 <= x1<x2<=512,  etc.)
             x1, y1, x2, y2 = merged_xyxy.unbind(-1)
             w = x2 - x1
             h = y2 - y1
 
-            # 여기서 정규화된 좌표라고 가정. 
-            # 0 ~ 1 범위 벗어나는지 check
-            valid = (w > 1e-6) & (h > 1e-6) \
-                    & (x1 < 1.) & (y1 < 1.) \
-                    & (x2 > 0.) & (y2 > 0.)
+            valid = (w > 1e-6) & (h > 1e-6) & \
+                    (x1 >= 0) & (y1 >= 0) & \
+                    (x2 <= 512) & (y2 <= 512)
+
+            # valid 계산
+            # print("[DEBUG] valid mask:", valid.shape, valid.sum().item(), valid[:10])
+            # => 얼마나 살아남았는지, 그리고 그 이유(조건)도 확인
 
             # valid 길이가 merged_xyxy와 같아야 함
             if valid.shape[0] != merged_xyxy.shape[0]:
@@ -232,33 +228,41 @@ class BatchImageCollateFunction(BaseCollateFunction):
 
             merged_xyxy = merged_xyxy[valid]
 
+            # 최종 xyxy
+            # print("[DEBUG] merged_xyxy(after valid):", merged_xyxy.shape, merged_xyxy[:5])
+
             # (C) labels, area 등도 valid만큼 필터
-            if 'labels' in updated_targets[i]:
-                if valid.shape[0] == updated_targets[i]['labels'].shape[0]:
-                    updated_targets[i]['labels'] = updated_targets[i]['labels'][valid]
+            if "labels" in updated_targets[i]:
+                if updated_targets[i]["labels"].shape[0] == valid.shape[0]:
+                    updated_targets[i]["labels"] = updated_targets[i]["labels"][valid]
                 else:
-                    # 길이 mismatch => 강제로 empty
-                    updated_targets[i]['labels'] = updated_targets[i]['labels'].new_empty((0,))
-            if 'area' in updated_targets[i]:
-                if valid.shape[0] == updated_targets[i]['area'].shape[0]:
-                    updated_targets[i]['area'] = updated_targets[i]['area'][valid]
+                    updated_targets[i]["labels"] = updated_targets[i]["labels"].new_empty((0,))
+            if "area" in updated_targets[i]:
+                if updated_targets[i]["area"].shape[0] == valid.shape[0]:
+                    updated_targets[i]["area"] = updated_targets[i]["area"][valid]
                 else:
-                    updated_targets[i]['area'] = updated_targets[i]['area'].new_empty((0,))
-            if 'mixup' in updated_targets[i]:
-                if valid.shape[0] == updated_targets[i]['mixup'].shape[0]:
-                    updated_targets[i]['mixup'] = updated_targets[i]['mixup'][valid]
+                    updated_targets[i]["area"] = updated_targets[i]["area"].new_empty((0,))
+            if "mixup" in updated_targets[i]:
+                if updated_targets[i]["mixup"].shape[0] == valid.shape[0]:
+                    updated_targets[i]["mixup"] = updated_targets[i]["mixup"][valid]
                 else:
-                    updated_targets[i]['mixup'] = updated_targets[i]['mixup'].new_empty((0,))
+                    updated_targets[i]["mixup"] = updated_targets[i]["mixup"].new_empty((0,))
 
             # 6) XYXY -> CXCYWH 재변환
-            merged_cxcywh = box_convert(merged_xyxy, in_fmt="xyxy", out_fmt="cxcywh")
+            pixel_cxcywh = box_convert(merged_xyxy, in_fmt="xyxy", out_fmt="xywh")
+
+            # normalize
+            pixel_cxcywh[..., 0] /= 512
+            pixel_cxcywh[..., 1] /= 512
+            pixel_cxcywh[..., 2] /= 512
+            pixel_cxcywh[..., 3] /= 512
 
             # 7) 다시 BoundingBoxes로
             #    (format=BoundingBoxFormat.CXCYWH, canvas_size=(H,W) 등)
-            updated_targets[i]['boxes'] = BoundingBoxes(
-                merged_cxcywh,
-                format=BoundingBoxFormat.CXCYWH,
-                canvas_size=boxes_cur_cxcywh.canvas_size  # 기존과 동일
+            updated_targets[i]["boxes"] = BoundingBoxes(
+                pixel_cxcywh,
+                format=BoundingBoxFormat.CXCYWH,  # 최종 cxcywh
+                canvas_size=(512, 512)            # (H,W)
             )
 
         # 8) mixup ratio 저장
@@ -317,12 +321,18 @@ class BatchImageCollateFunction(BaseCollateFunction):
         images = torch.cat([x[0][None] for x in items], dim=0)
         targets = [x[1] for x in items]
 
-        # # --- 여기서 print ---
-        # for i, t in enumerate(targets):
-        #     print(f"[DEBUG] Before Mixup: target[{i}]['boxes'] = {t['boxes']}")
+        if self.epoch < 2 and random.random()<0.1:
+            # (A) debug: batch별 박스 총합
+            total_boxes = sum(t["boxes"].shape[0] for t in targets)
+            print(f"[DEBUG] Collate => total GT boxes in this batch = {total_boxes}")
 
         # Mixup
         images, targets = self.apply_mixup(images, targets)
+
+        # (B) debug: mixup 후 box 총합
+        total_boxes_after = sum(t["boxes"].shape[0] for t in targets)
+        if total_boxes_after>0:
+            print(f"[DEBUG] After MixUp => total GT boxes = {total_boxes_after}")
 
         if self.scales is not None and self.epoch < self.stop_epoch:
             # sz = random.choice(self.scales)
