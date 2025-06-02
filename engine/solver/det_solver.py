@@ -200,12 +200,17 @@ class DetSolver(BaseSolver):
     def state_dict(self, epoch=-1, metric=None):
         # super() 호출할 때 epoch 인자 안 넘김
         state = super().state_dict()  # 부모는 인자 self만
-        state['epoch'] = epoch
+        state['last_epoch'] = epoch
         if metric is not None:
             state['best_metric'] = metric
         return state
 
     def load_state_dict(self, state):
         super().load_state_dict(state)
+        # 기존
+
+        if 'last_epoch' in state:
+            self.last_epoch = state['epoch']
+
         if 'best_metric' in state:
             self.best_metric = state['best_metric']

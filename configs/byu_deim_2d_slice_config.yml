@@ -61,7 +61,7 @@ train_dataloader:
                            # 계산: [warmup 종료 시점 근처, flat_epoch, epoches - no_aug_epoch]
                            # rt_deim.yml의 epoch: [4, 29, 50]은 epoches=58 기준이었음.
                            # 이 값을 현재 설정된 epoches, flat_epoch, no_aug_epoch에 맞게 재계산 필요.
-        ops: ['Mosaic','RandomPhotometricDistort'] # rt_deim.yml의 policy.ops
+        ops: ['Mosaic', 'RandomPhotometricDistort'] # rt_deim.yml의 policy.ops
       mosaic_prob: 0.2 # rt_deim.yml 값 사용 또는 여기서 오버라이드
   collate_fn: # rt_deim.yml 설정을 기반으로 하되, BYU 데이터에 맞게 조정
     # type: BatchImageCollateFunction 은 rt_deim.yml 에서 상속됨

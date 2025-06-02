@@ -111,6 +111,11 @@ def train_one_epoch(
             current_total_iter = epoch * iter_per_epoch + i
             lr_scheduler_to_use.step(current_iter=current_total_iter, optimizer=optimizer)
 
+        # LR 프린트 (param_groups가 여러 개면 리스트로 출력)
+        if i % print_freq == 0:
+            lr_values = [pg["lr"] for pg in optimizer.param_groups]
+            print(f"[Epoch={epoch}][Iter={i}] LR(s)={lr_values}")
+
         if ema is not None:
             ema.update(model)
 
