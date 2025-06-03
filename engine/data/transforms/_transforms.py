@@ -202,7 +202,7 @@ class ConvertBoxes(T.Transform):
             out_bboxes = BoundingBoxes._wrap(
                 normalized_data,
                 format=BoundingBoxFormat.XYXY,
-                canvas_size=(1,1),  # 0~1 범위이므로 (1,1)로 설정 (혹은 (H,W) 그대로 두기도 함)
+                canvas_size=(H,W),  # 0~1 범위이므로 (1,1)로 설정 (혹은 (H,W) 그대로 두기도 함)
                 check_dims=False
             )
             return out_bboxes
@@ -218,7 +218,7 @@ class ConvertBoxes(T.Transform):
             out_bboxes = BoundingBoxes._wrap(
                 normalized_data,
                 format=BoundingBoxFormat.XYWH,
-                canvas_size=(1,1),
+                canvas_size=(H,W),
                 check_dims=False
             )
             return out_bboxes
@@ -234,7 +234,7 @@ class ConvertBoxes(T.Transform):
             out_bboxes = BoundingBoxes._wrap(
                 normalized_data,
                 format=BoundingBoxFormat.CXCYWH,
-                canvas_size=(1,1),
+                canvas_size=(H,W),
                 check_dims=False
             )
             return out_bboxes

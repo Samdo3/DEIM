@@ -127,65 +127,54 @@ class BatchImageCollateFunction(BaseCollateFunction):
 
     def apply_mixup(self, images, targets):
         """
-        B안: 평소 boxes = BoundingBoxes(CXCYWH, 정규화)
-            MixUp 직전에만 XYXY 변환 → concat + sanitize → 다시 CXCYWH 복귀.
-
-        Args:
-            images (torch.Tensor): Batch of images of shape (B, C, H, W), in 0~1 float range.
-            targets (list[dict]): List of target dictionaries. 각 target에는
-                {
-                'boxes': BoundingBoxes(CXCYWH, normalize=True),
-                'labels': Tensor(...),
-                'area': Tensor(...),
-                (optional) 'mixup': Tensor(...),
-                ...
-                }
-            가 포함되어 있다고 가정.
-
-        Returns:
-            (images, updated_targets):
-                - images: mixup된 이미지 텐서 (shape 동일)
-                - updated_targets: mixup된 타겟 리스트. 'boxes'는 다시 CXCYWH로 복귀.
+        가정: 
+        - 현재 'boxes' 필드가 'cxcywh' + normalize=True 형태로 들어옴 (0~1)
+        - Mixup 단계에서 편의상 '픽셀 XYXY'로 변환 -> roll -> concat -> filter
+        - 그리고 최종에는 다시 'cxcywh'(정규화)로 돌려서 저장한다.
+        - 이미지 크기는 고정 512 x 512 라고 가정.
         """
-
-        # 1) MixUp 적용 여부
-        if not (
-            random.random() < self.mixup_prob
-            and self.mixup_epochs[0] <= self.epoch < self.mixup_epochs[-1]
-        ):
+        # 1) mixup on/off
+        if not (random.random() < self.mixup_prob and self.mixup_epochs[0] <= self.epoch < self.mixup_epochs[-1]):
             return images, targets
 
-        # 2) mixup ratio
-        beta = round(random.uniform(0.45, 0.55), 6)  # 예) 0.45~0.55 범위 float
+        # 2) ratio
+        beta = round(random.uniform(0.45, 0.55), 6)
 
-        # 3) 이미지 mixup (batch 내에서 roll)
-        #    images.shape = (B, C, H, W)
+        # 3) mix image
         images = images.roll(shifts=1, dims=0).mul_(1.0 - beta).add_(images.mul(beta))
 
-        # 4) 타겟 mixup
         shifted_targets = targets[-1:] + targets[:-1]
         updated_targets = deepcopy(targets)
 
         for i in range(len(targets)):
+            # 만약 boxes가 존재하지 않으면 skip
             if "boxes" not in updated_targets[i] or "boxes" not in shifted_targets[i]:
                 continue
 
-            # (A) mosaic가 준 boxes는 "픽셀 XYXY"라고 가정
-            #     => as_subclass(torch.Tensor)로 가져오기
-            boxes_cur_xyxy = updated_targets[i]["boxes"].as_subclass(torch.Tensor)
-            boxes_shifted_xyxy = shifted_targets[i]["boxes"].as_subclass(torch.Tensor)
+            boxesA = updated_targets[i]["boxes"]   # BoundingBoxes(cxcywh, normalize=True)
+            boxesB = shifted_targets[i]["boxes"]
 
-            cur_xyxy = box_convert(boxes_cur_xyxy, in_fmt="xywh", out_fmt="xyxy")  # => pixel-based
-            shift_xyxy = box_convert(boxes_shifted_xyxy, in_fmt="xywh", out_fmt="xyxy")
+            # (A) cxcywh(normalized) -> 픽셀 xyxy
+            # 1) as_subclass tensor
+            A_cxcywh = boxesA.as_subclass(torch.Tensor)  # shape [N,4]
+            B_cxcywh = boxesB.as_subclass(torch.Tensor)
 
-            # print("[DEBUG] cur_xyxy:", cur_xyxy.shape, cur_xyxy[:5])
-            # print("[DEBUG] shift_xyxy:", shift_xyxy.shape, shift_xyxy[:5])
+            # 2) undo normalization => 픽셀 cxcywh
+            #   (cx,cy,w,h) in [0,1] -> multiply by 512
+            A_cxcywh_px = A_cxcywh.clone()
+            B_cxcywh_px = B_cxcywh.clone()
+            A_cxcywh_px[..., :4] *= 512.0   # (cx,cy,w,h) => now 0~512
+            B_cxcywh_px[..., :4] *= 512.0
+
+            # 3) cxcywh -> xyxy
+            A_xyxy = box_convert(A_cxcywh_px, in_fmt="cxcywh", out_fmt="xyxy")
+            B_xyxy = box_convert(B_cxcywh_px, in_fmt="cxcywh", out_fmt="xyxy")
 
             # concat
-            merged_xyxy = torch.cat([cur_xyxy, shift_xyxy], dim=0)
+            merged_xyxy = torch.cat([A_xyxy, B_xyxy], dim=0)
             # print("[DEBUG] merged_xyxy(before valid):", merged_xyxy.shape, merged_xyxy[:5])
 
-            # labels
+            # labels, area
             if "labels" in updated_targets[i] and "labels" in shifted_targets[i]:
                 updated_targets[i]["labels"] = torch.cat([
                     updated_targets[i]["labels"],
@@ -198,34 +187,30 @@ class BatchImageCollateFunction(BaseCollateFunction):
                 ], dim=0)
 
             # mixup ratio
-            N_cur = boxes_cur_xyxy.shape[0]
-            N_shifted = boxes_shifted_xyxy.shape[0]
-            ratio_tensor = torch.tensor(
-                [beta]*N_cur + [(1.0 - beta)]*N_shifted,
-                dtype=torch.float32
-            )
-            updated_targets[i]["mixup"] = ratio_tensor
+            Ncur = A_xyxy.shape[0]
+            Nshf = B_xyxy.shape[0]
+            updated_targets[i]["mixup"] = torch.tensor([beta]*Ncur + [(1-beta)]*Nshf, dtype=torch.float32)
 
-            # 5) sanitize
-            #   => 픽셀 좌표 전제로 (0 <= x1<x2<=512,  etc.)
+            # 4) sanitize in pixel coords
             x1, y1, x2, y2 = merged_xyxy.unbind(-1)
-            w = x2 - x1
-            h = y2 - y1
+            #  (A) 만약 이미지크기가 512×512 라면 clamp로 이미지 범위 밖 제거 or 잘라내기
+            x1 = x1.clamp(0, 512)
+            x2 = x2.clamp(0, 512)
+            y1 = y1.clamp(0, 512)
+            y2 = y2.clamp(0, 512)
 
-            valid = (w > 1e-6) & (h > 1e-6) & \
-                    (x1 >= 0) & (y1 >= 0) & \
-                    (x2 <= 512) & (y2 <= 512)
+            # (B) reorder => x1 <= x2, y1 <= y2
+            new_x1 = torch.min(x1, x2)
+            new_x2 = torch.max(x1, x2)
+            new_y1 = torch.min(y1, y2)
+            new_y2 = torch.max(y1, y2)
 
-            # valid 계산
-            # print("[DEBUG] valid mask:", valid.shape, valid.sum().item(), valid[:10])
-            # => 얼마나 살아남았는지, 그리고 그 이유(조건)도 확인
+            merged_xyxy = torch.stack([new_x1, new_y1, new_x2, new_y2], dim=-1)
 
-            # valid 길이가 merged_xyxy와 같아야 함
-            if valid.shape[0] != merged_xyxy.shape[0]:
-                # 매우 이례적인 경우. 그냥 스킵하거나 empty로 처리
-                updated_targets[i]['boxes'] = boxes_cur_cxcywh.new_empty((0,4)) # etc
-                continue
-
+            # (C) 작은 박스 제거
+            w = new_x2 - new_x1
+            h = new_y2 - new_y1
+            valid = (w>1e-3) & (h>1e-3)
             merged_xyxy = merged_xyxy[valid]
 
             # 최종 xyxy
@@ -248,15 +233,18 @@ class BatchImageCollateFunction(BaseCollateFunction):
                 else:
                     updated_targets[i]["mixup"] = updated_targets[i]["mixup"].new_empty((0,))
 
-            # 6) XYXY -> "xywh" 재변환
-            pixel_xywh = box_convert(merged_xyxy, in_fmt="xyxy", out_fmt="xywh")
+            # 5) pixel xyxy -> normalized cxcywh
+            #   (1) xyxy -> cxcywh in pixel
+            merged_cxcywh_px = box_convert(merged_xyxy, "xyxy", "cxcywh")
+            #   (2) pixel -> normalize
+            merged_cxcywh_norm = merged_cxcywh_px.clone()
+            merged_cxcywh_norm[..., :4] /= 512.0
 
-            # 7) 다시 BoundingBoxes로
-            #    (format=BoundingBoxFormat.CXCYWH, canvas_size=(H,W) 등)
+            # 6) wrap to boundingBoxes
             updated_targets[i]["boxes"] = BoundingBoxes(
-                pixel_xywh,
-                format=BoundingBoxFormat.XYWH,  # 최종 xywh
-                canvas_size=(512, 512)            # (H,W)
+                merged_cxcywh_norm,
+                format=BoundingBoxFormat.CXCYWH,
+                canvas_size=(512,512) # or (H,W)
             )
 
         # 8) mixup ratio 저장
@@ -267,45 +255,44 @@ class BatchImageCollateFunction(BaseCollateFunction):
             # (원한다면 cur-part와 shifted-part를 구분해서 저장 가능)
             updated_targets[i]['mixup'] = mixup_tensor
 
-        # (Optional) 시각화
+        # 예시: MixUp 시각화 코드
         if self.data_vis:
             from PIL import Image, ImageDraw
             import os
             os.makedirs(self.vis_save, exist_ok=True)
 
             for i, t in enumerate(updated_targets):
-                # images[i] => (C,H,W)
+                # images[i] => (C,H,W) float32 tensor in [0..1]
                 image_tensor = images[i].detach().cpu()
                 image_tensor_uint8 = (image_tensor * 255).clamp(0,255).byte()
                 # (H,W,C)
                 image_numpy = image_tensor_uint8.numpy().transpose((1, 2, 0))
                 # PIL Image
-                pilImage = Image.fromarray(image_numpy, mode='RGB')
+                pilImage = Image.fromarray(image_numpy, mode='L')
                 draw = ImageDraw.Draw(pilImage)
 
-                # t['boxes'] => BoundingBoxes(CXCYWH)
-                # scale to image size and draw
-                boxes_draw = t['boxes']
-                if boxes_draw.numel() > 0:
-                    boxes_xyxy_draw = box_convert(
-                        boxes_draw.as_subclass(torch.Tensor), "xywh", "xyxy"
-                    )
-                    # scale to (H,W)
-                    # x1, y1, x2, y2 = ...
-                    x1, y1, x2, y2 = boxes_xyxy_draw.unbind(-1)
-                    # multiply by image shape(정규화x)
-                    # x1 *= pilImage.width
-                    # x2 *= pilImage.width
-                    # y1 *= pilImage.height
-                    # y2 *= pilImage.height
+                # t['boxes'] => BoundingBoxes(...)  with format=XYWH (픽셀 좌표로 가정)
+                boxes_xywh_draw = t['boxes'].as_subclass(torch.Tensor)  # shape=(N,4)
+                if boxes_xywh_draw.numel() > 0:
+                    # xywh -> (x1, y1, x2, y2)
+                    x = boxes_xywh_draw[:, 0]
+                    y = boxes_xywh_draw[:, 1]
+                    w = boxes_xywh_draw[:, 2]
+                    h = boxes_xywh_draw[:, 3]
 
+                    x1 = x
+                    y1 = y
+                    x2 = x + w
+                    y2 = y + h
+
+                    # 이제 x1,y1,x2,y2는 픽셀 좌표라고 가정
                     for bx in range(len(x1)):
                         draw.rectangle(
                             [x1[bx].item(), y1[bx].item(), x2[bx].item(), y2[bx].item()],
                             outline=(255, 0, 0), width=2
                         )
 
-                save_path = f"{self.vis_save}/mixup_epoch{self.epoch}_idx{i}_boxes{len(boxes_draw)}.jpg"
+                save_path = f"{self.vis_save}/mixup_epoch{self.epoch}_idx{i}_boxes{len(boxes_xywh_draw)}.jpg"
                 pilImage.save(save_path)
                 print(f"[MixUp DEBUG] saved: {save_path}")
 

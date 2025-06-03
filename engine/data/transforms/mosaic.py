@@ -117,150 +117,186 @@ class Mosaic(T.Transform):
 
     def create_mosaic_from_cache(self, mosaic_samples, max_height, max_width):
         """
-        기존:
-          merged_image = Image.new(mode=mosaic_samples[0]["img"].mode, ...)
-          merged_image.paste(img, placement_offsets[i])
-
-        수정:
-          1) merged_image = Image.new(mode="L", ...)
-          2) img가 PIL이 아니면 to_pil_image(img, mode="L")
+        1) merged_image: PIL Image("L")
+        2) paste()로 4등분
+        3) 모든 target['boxes']는 cxcywh -> xyxy 변환 + offset
+        4) 한 번에 merged_target에 cat()
+        5) broken box (w<=0,h<=0) 제거
+        6) return (mosaic_image_tensor, merged_target)
         """
-        placement_offsets = [[0, 0], [max_width, 0], [0, max_height], [max_width, max_height]]
-        # 흑백 => mode="L"
+        from PIL import Image
+        from torchvision.transforms.functional import pil_to_tensor
+
+        placement_offsets = [
+            [0, 0],
+            [max_width, 0],
+            [0, max_height],
+            [max_width, max_height]
+        ]
+        # 2배 사이즈 (가로 2×max_width, 세로 2×max_height)
+        merged_image = Image.new(mode="L", size=(max_width*2, max_height*2), color=0)
+
+        # 오프셋을 xyxy(4원소)로 더하기 쉽게 tensor 준비
+        offsets_xyxy = torch.tensor([
+            [0, 0, 0, 0],
+            [max_width, 0, max_width, 0],
+            [0, max_height, 0, max_height],
+            [max_width, max_height, max_width, max_height]
+        ], dtype=torch.float32)
+
+        mosaic_targets = []
+        # 1) 이미지 4장을 순회
+        for i, sample in enumerate(mosaic_samples):
+            img_t = sample["img"]  # (C,H,W) float or PIL
+            tgt = sample["labels"] # dict with 'boxes'(cxcywh)...
+
+            # (A) PIL 변환
+            if not isinstance(img_t, Image.Image):
+                # mode="L" assumed
+                if img_t.shape[0] == 1:
+                    pil_img = to_pil_image(img_t, mode="L")
+                elif img_t.shape[0] == 3:
+                    pil_img = to_pil_image(img_t, mode="RGB").convert("L")
+                else:
+                    raise ValueError(f"Unexpected channels: {img_t.shape[0]}")
+            else:
+                pil_img = img_t
+
+            # paste
+            merged_image.paste(pil_img, tuple(placement_offsets[i]))
+
+            # (B) 박스 변환
+            # cxcywh -> xyxy
+            boxes_cxcywh = tgt["boxes"]
+            cxcywh_t = boxes_cxcywh.as_subclass(torch.Tensor)  # shape(N,4)
+            xyxy_t = box_convert(cxcywh_t, in_fmt="cxcywh", out_fmt="xyxy")
+
+            # (C) offset
+            xyxy_t += offsets_xyxy[i]
+
+            # 디버그: 오프셋 더한 뒤 값
+            # print(f"[Mosaic] sample={i}, AFTER offset => boxes_xyxy[:5]:", boxes_xyxy_t[:5])
+
+
+            # (D) clamp (2배 canvas 넘어가면 잘라주기) - 선택사항
+            #     예: x1,x2 in [0,2×max_width], y1,y2 in [0,2×max_height]
+            x1, y1, x2, y2 = xyxy_t.unbind(-1)
+            x1 = x1.clamp(0, max_width*2)
+            x2 = x2.clamp(0, max_width*2)
+            y1 = y1.clamp(0, max_height*2)
+            y2 = y2.clamp(0, max_height*2)
+
+            # reorder => x1 <= x2, y1 <= y2
+            new_x1 = torch.min(x1, x2)
+            new_x2 = torch.max(x1, x2)
+            new_y1 = torch.min(y1, y2)
+            new_y2 = torch.max(y1, y2)
+            xyxy_t = torch.stack([new_x1, new_y1, new_x2, new_y2], dim=-1)
+
+            # (E) min_size 필터 or w>1e-6
+            w = new_x2 - new_x1
+            h = new_y2 - new_y1
+            valid = (w>1e-4) & (h>1e-4)
+            xyxy_t = xyxy_t[valid]
+
+            # labels, area 등도 있으면 동등하게 valid로 필터
+            if "labels" in tgt:
+                tgt["labels"] = tgt["labels"][valid] if tgt["labels"].shape[0] == valid.shape[0] else tgt["labels"].new_empty((0,))
+            if "area" in tgt:
+                tgt["area"] = tgt["area"][valid] if tgt["area"].shape[0] == valid.shape[0] else tgt["area"].new_empty((0,))
+            
+            # mosaic_targets에 담기
+            tgt["boxes"] = xyxy_t
+            mosaic_targets.append(tgt)
+
+        # (F) 최종 merged_target => cat
+        merged_target = {}
+        for key in mosaic_targets[0].keys():
+            vals = [tt[key] for tt in mosaic_targets]
+            if isinstance(vals[0], torch.Tensor):
+                merged_target[key] = torch.cat(vals, dim=0)
+            else:
+                merged_target[key] = vals
+
+        # (G) 최종 merged_image -> tensor(float)
+        mosaic_tensor = pil_to_tensor(merged_image).float().div(255.0)
+
+        return mosaic_tensor, merged_target
+
+    def create_mosaic_from_dataset(self, images, targets, max_height, max_width):
+        """
+        유사하게 “dataset 버전 mosaic”도 clamp+reorder+filter
+        """
+        placement_offsets = [
+            [0, 0],
+            [max_width, 0],
+            [0, max_height],
+            [max_width, max_height],
+        ]
         merged_image = Image.new(mode="L", size=(max_width * 2, max_height * 2), color=0)
 
-        offsets_tensor = torch.tensor([
+        # paste
+        for i, img in enumerate(images):
+            if not isinstance(img, Image.Image):
+                if img.shape[0] == 1:
+                    pil_img = to_pil_image(img, mode="L")
+                elif img.shape[0] == 3:
+                    pil_img = to_pil_image(img, mode="RGB").convert("L")
+                else:
+                    raise ValueError(f"Unexpected shape: {img.shape}")
+            else:
+                pil_img = img
+            merged_image.paste(pil_img, tuple(placement_offsets[i]))
+
+        # offsets
+        offsets_xyxy = torch.tensor([
             [0, 0, 0, 0],
             [max_width, 0, max_width, 0],
             [0, max_height, 0, max_height],
             [max_width, max_height, max_width, max_height],
         ], dtype=torch.float32)
 
-        mosaic_target = []
-        for i, sample in enumerate(mosaic_samples):
-            img = sample["img"]  # tv_tensor?
-            target = sample["labels"]
-
-            # 1) 만약 CXCYWH -> XYXY 변환
-            boxes_cxcywh = target['boxes']  # BoundingBoxes(CXCYWH)
-
-            # (1) cxcywh -> xyxy 변환
-            boxes_xyxy_tensor = box_convert(
-                boxes_cxcywh.as_subclass(torch.Tensor),
-                in_fmt="cxcywh",
-                out_fmt="xyxy"
-            )
-
-            # 2) offset 더하기 (x1, y1, x2, y2 각각에)
-            # offsets_tensor[i] = [ox1, oy1, ox2, oy2] 식
-            boxes_xyxy_tensor += offsets_tensor[i]
-
-            # 다시 boxes_xyxy에 덮어쓰기
-            boxes_xyxy = boxes_xyxy_tensor
-
-            # 3) target['boxes']를 XYXY로 교체
-            #   -> 굳이 BoundingBoxes 객체로 다시 만들 수도 있고, 
-            #      나중 convert_to_tv_tensor에서 'xyxy'로 처리하므로 일단 tensor만 둬도 됨.
-            target['boxes'] = boxes_xyxy  # 이 상태가 xyxy tensor
-
-            # 만약 img가 PIL Image가 아니라면, to_pil_image로 변환
-            if not isinstance(img, Image.Image):
-                # 흑백 => mode="L"
-                if img.shape[0] == 1:
-                    # OK: "L"
-                    img = to_pil_image(img, mode="L")
-                elif img.shape[0] == 3:
-                    # color => "RGB"
-                    img = to_pil_image(img, mode="RGB").convert("L")
-                    # convert("L")로 흑백으로 바꿀 수도
-                else:
-                    raise ValueError(f"Unexpected channels: {img.shape[0]}")
-
-            merged_image.paste(img, tuple(placement_offsets[i]))
-            # target['boxes'] = target['boxes'] + offsets[i]
-            mosaic_target.append(target)
-
-        merged_target = {}
-
-        # 예: 4개 타겟을 합친다고 가정
-        for key in mosaic_target[0].keys():
-            values = [t[key] for t in mosaic_target]
-
-            if isinstance(values[0], torch.Tensor):
-                # 텐서인 경우만 cat
-                merged_target[key] = torch.cat(values, dim=0)
-            else:
-                # 문자열, int 등 텐서가 아닌 경우 => 단순 리스트 묶기 or 첫 번째 값만 유지
-                # 예) merged_target[key] = [v for v in values]
-                #    혹은 merged_target[key] = values[0]
-                merged_target[key] = values
-        
-        mosaic_image_tensor = pil_to_tensor(merged_image)  # shape = (C,H,W)
-        # === 수정: uint8 -> float ===
-        mosaic_image_tensor = mosaic_image_tensor.to(torch.float32).div(255.0)
-
-        return mosaic_image_tensor, merged_target
-
-    def create_mosaic_from_dataset(self, images, targets, max_height, max_width):
-        """
-        Similar fix for dataset-based mosaic
-        """
-        placement_offsets = [[0, 0], [max_width, 0], [0, max_height], [max_width, max_height]]
-        # 흑백 => mode="L"
-        merged_image = Image.new(mode="L", size=(max_width * 2, max_height * 2), color=0)
-
-        for i, img in enumerate(images):
-            if not isinstance(img, Image.Image):
-                # 흑백 => mode="L"
-                if img.shape[0] == 1:
-                    # OK: "L"
-                    img = to_pil_image(img, mode="L")
-                elif img.shape[0] == 3:
-                    # color => "RGB"
-                    img = to_pil_image(img, mode="RGB").convert("L")
-                    # convert("L")로 흑백으로 바꿀 수도
-                else:
-                    raise ValueError(f"Unexpected channels: {img.shape[0]}")
-                    
-            merged_image.paste(img, tuple(placement_offsets[i]))
-
-        # Merge targets
-        offsets = torch.tensor([[0, 0], [max_width, 0], [0, max_height], [max_width, max_height]]).repeat(1, 2)
-        merged_target = {}
+        # cat
+        mosaic_tgt = {}
         for key in targets[0].keys():
-            # 각 타겟에서 key 항목들을 모음
-            values = []
+            vals = []
             if key == "boxes":
-                # boxes는 offsets를 더해야 하므로
                 for i, t in enumerate(targets):
-                    boxes_cxcywh = t["boxes"]  # 예: cxcywh로 저장된 BoundingBoxes 혹은 Tensor
-                    boxes_xyxy_tensor = box_convert(
-                        boxes_cxcywh.as_subclass(torch.Tensor),
-                        in_fmt='cxcywh',
-                        out_fmt='xyxy'
-                    )    
-                    # 2) offset
-                    boxes_xyxy_tensor += offsets[i]
-                    # 3) 최종 보관
-                    values.append(boxes_xyxy_tensor)
+                    # cxcywh->xyxy
+                    cxcys = t["boxes"].as_subclass(torch.Tensor)
+                    xyxy = box_convert(cxcys, in_fmt="cxcywh", out_fmt="xyxy")
+                    # offset
+                    xyxy += offsets_xyxy[i]
+                    # clamp & reorder
+                    x1, y1, x2, y2 = xyxy.unbind(-1)
+                    x1 = x1.clamp(0, max_width*2)
+                    x2 = x2.clamp(0, max_width*2)
+                    y1 = y1.clamp(0, max_height*2)
+                    y2 = y2.clamp(0, max_height*2)
+
+                    new_x1 = torch.min(x1, x2)
+                    new_x2 = torch.max(x1, x2)
+                    new_y1 = torch.min(y1, y2)
+                    new_y2 = torch.max(y1, y2)
+                    xyxy = torch.stack([new_x1, new_y1, new_x2, new_y2], dim=-1)
+
+                    w = new_x2 - new_x1
+                    h = new_y2 - new_y1
+                    valid = (w>1e-4) & (h>1e-4)
+                    xyxy = xyxy[valid]
+
+                    vals.append(xyxy)
             else:
-                # 그외 필드는 offset이 필요 없을 수도 있음
                 for i, t in enumerate(targets):
-                    values.append(t[key])
-
-            # 텐서이면 cat
-            if isinstance(values[0], torch.Tensor):
-                merged_target[key] = torch.cat(values, dim=0)
+                    vals.append(t[key])
+            # cat
+            if isinstance(vals[0], torch.Tensor):
+                mosaic_tgt[key] = torch.cat(vals, dim=0)
             else:
-                # 예: tomo_id, slice_idx 같은 문자열이나 스칼라면
-                # 전부 리스트로 묶거나, 하나만 쓰거나 원하는대로 처리
-                merged_target[key] = values  # 혹은 merged_target[key] = values[0]
+                mosaic_tgt[key] = vals
 
-        mosaic_image_tensor = pil_to_tensor(merged_image)  # shape = (C,H,W)
-        # === 수정: uint8 -> float ===
-        mosaic_image_tensor = mosaic_image_tensor.to(torch.float32).div(255.0)
-
-        return mosaic_image_tensor, merged_target
+        merged_tensor = pil_to_tensor(merged_image).float().div(255.0)
+        return merged_tensor, mosaic_tgt
 
     def forward(self, *inputs):
         if len(inputs) == 1:

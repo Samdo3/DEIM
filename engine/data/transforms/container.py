@@ -204,8 +204,8 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
             transform_name = type(transform_obj).__name__
 
             # before
-            if "boxes" in current_target:
-                print(f"[DEBUG] Before {type(transform_obj).__name__}, #boxes={current_target['boxes'].shape[0]}")
+            # if "boxes" in current_target:
+            #     print(f"[DEBUG] Before {type(transform_obj).__name__}, #boxes={current_target['boxes'].shape[0]}")
 
             # --- BEFORE ---
             if current_target is not None and "boxes" in current_target:
@@ -220,8 +220,8 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
             current_img, current_target = self._apply_single_transform(transform_obj, current_img, current_target, current_dataset_instance)
 
             # after
-            if "boxes" in current_target:
-                print(f"[DEBUG] After {type(transform_obj).__name__}, #boxes={current_target['boxes'].shape[0]}")
+            # if "boxes" in current_target:
+            #     print(f"[DEBUG] After {type(transform_obj).__name__}, #boxes={current_target['boxes'].shape[0]}")
 
             # --- AFTER ---
             if current_target is not None and "boxes" in current_target:
@@ -287,32 +287,81 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
             # --- BEFORE ---
             if current_target and "boxes" in current_target:
                 before_boxes = current_target["boxes"]
+                # print(f"[{i}/{type(transform_obj).__name__}] BEFORE => {before_boxes[:5]}")
+
                 if isinstance(before_boxes, BoundingBoxes):
                     broken_before = _check_broken_boxes(before_boxes)
 
                     # 박스 개수:
                     num_before = len(before_boxes)
 
-                    # if (num_before > 0 and broken_before):
+                    # if (num_before > 0 or broken_before):
                     if (broken_before):
                         print(f"[Epoch=?][{i}/{transform_name}] BEFORE -> #boxes={num_before}, broken? {broken_before}")
+
 
             # 실제 transform
             if apply_this_transform:
                 # print(f"  Epoch {cur_epoch}: Applying {transform_name} ...")
                 current_img, current_target = self._apply_single_transform(transform_obj, current_img, current_target, dataset_instance)
 
+
             # --- AFTER ---
             if current_target and "boxes" in current_target:
                 after_boxes = current_target["boxes"]
+                # print(f"[{i}/{type(transform_obj).__name__}] AFTER => {after_boxes[:5]}")
+
                 if isinstance(after_boxes, BoundingBoxes):
+
+                    coords = after_boxes.as_subclass(torch.Tensor)  # shape=[N,4], e.g. XYXY
+
+                    in_fmt_str = str(after_boxes.format.value).lower()
+                    out_fmt_str = str(BoundingBoxFormat.XYXY.value).lower()
+                    temp_xyxy_boxes = box_convert(coords, in_fmt_str, out_fmt_str)
+                    x1_f, y1_f, x2_f, y2_f = temp_xyxy_boxes.unbind(-1)
+                    w_filter = x2_f - x1_f
+                    h_filter = y2_f - y1_f
+                    valid = (w_filter > 1e-6) & (h_filter > 1e-6) # 1e-6 보다 큰 크기의 박스만 유효 처리
+
+                    num_after = len(after_boxes)
+                    num_boxes_before_internal_filter = after_boxes.shape[0]
+                    num_boxes_after_internal_filter = valid.sum().item() # valid는 이 내부 필터의 결과
+
+                    # x1, y1, x2, y2 = coords.unbind(-1)  => 이게 문제
+                    # w = x2 - x1
+                    # h = y2 - y1
+                    # valid = (w>1e-6) & (h>1e-6)
+                    
+                    if valid.any():
+                        coords = coords[valid]
+                        current_target["boxes"] = after_boxes._wrap(
+                            coords,
+                            format=after_boxes.format,
+                            canvas_size=after_boxes.canvas_size
+                        )
+                        # labels, area, etc.도 같이 valid로 필터링
+                        if "labels" in current_target:
+                            current_target["labels"] = current_target["labels"][valid]
+                        if "area" in current_target:
+                            current_target["area"]  = current_target["area"][valid]
+                    else:
+                        # 모두 invalid라면 0개
+                        current_target["boxes"]  = after_boxes._wrap(
+                            coords.new_empty((0,4)),
+                            format=after_boxes.format,
+                            canvas_size=after_boxes.canvas_size
+                        )
+                        if "labels" in current_target:
+                            current_target["labels"] = current_target["labels"].new_empty((0,))
+                        if "area" in current_target:
+                            current_target["area"]  = current_target["area"].new_empty((0,))
                     broken_after = _check_broken_boxes(after_boxes)
                     num_after = len(after_boxes)
 
                     # 마찬가지로 조건문
-                    # if (num_after != num_before) or (broken_after):
+                    # if (num_after > 0) or (broken_after):
                     if (broken_after):
-                        print(f"[Epoch=?][{i}/{transform_name}] AFTER -> #boxes={num_after}, broken? {broken_after}")
+                        print(f"[Epoch=?][{i}/{transform_name}] AFTER -> #before boxes={num_before}, #after boxes={num_after}, broken? {broken_after}")
                         # 추가로 상세 정보
                         if broken_after:
                             print("!!! Broken bounding box => x2 < x1 or y2 < y1")

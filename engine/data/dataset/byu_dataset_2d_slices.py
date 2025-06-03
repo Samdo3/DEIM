@@ -324,13 +324,18 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
     def __getitem__(self, idx):
         # DetDataset의 __getitem__ 로직을 따름
         img, target = self.load_item(idx)
-        
+
         # self.transforms는 YAML에서 Compose 객체로 주입됨
         # Compose 객체는 tv_tensor를 입력으로 받도록 설계되어 있음
         if self.transforms is not None:
             # self.transforms의 입력은 (image, target, dataset_instance) 형태를 기대할 수 있음
             # 또는 (image, target)만 받을 수도 있음. DEIM의 Compose는 (image, target, dataset)을 받음.
             img, target, _ = self.transforms(img, target, self) 
+
+        # if target['boxes'].shape[0]>0:
+        #     print(f"[DEBUG] AFTER transforms => #boxes={target['boxes'].shape[0]}")
+
+
         return img, target
 
     # set_epoch 메소드는 transforms.Compose.policy에서 사용될 수 있으므로 유지
