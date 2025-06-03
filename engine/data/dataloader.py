@@ -249,13 +249,13 @@ class BatchImageCollateFunction(BaseCollateFunction):
                     updated_targets[i]["mixup"] = updated_targets[i]["mixup"].new_empty((0,))
 
             # 6) XYXY -> "xywh" 재변환
-            pixel_cxcywh = box_convert(merged_xyxy, in_fmt="xyxy", out_fmt="xywh")
+            pixel_xywh = box_convert(merged_xyxy, in_fmt="xyxy", out_fmt="xywh")
 
             # 7) 다시 BoundingBoxes로
             #    (format=BoundingBoxFormat.CXCYWH, canvas_size=(H,W) 등)
             updated_targets[i]["boxes"] = BoundingBoxes(
-                pixel_cxcywh,
-                format=BoundingBoxFormat.CXCYWH,  # 최종 cxcywh
+                pixel_xywh,
+                format=BoundingBoxFormat.XYWH,  # 최종 xywh
                 canvas_size=(512, 512)            # (H,W)
             )
 
@@ -293,11 +293,11 @@ class BatchImageCollateFunction(BaseCollateFunction):
                     # scale to (H,W)
                     # x1, y1, x2, y2 = ...
                     x1, y1, x2, y2 = boxes_xyxy_draw.unbind(-1)
-                    # multiply by image shape
-                    x1 *= pilImage.width
-                    x2 *= pilImage.width
-                    y1 *= pilImage.height
-                    y2 *= pilImage.height
+                    # multiply by image shape(정규화x)
+                    # x1 *= pilImage.width
+                    # x2 *= pilImage.width
+                    # y1 *= pilImage.height
+                    # y2 *= pilImage.height
 
                     for bx in range(len(x1)):
                         draw.rectangle(

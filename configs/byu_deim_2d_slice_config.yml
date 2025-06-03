@@ -14,7 +14,11 @@ output_dir: ./outputs/byu_deim_2d_slice_exp001 # 결과 저장 경로
 
 # HGNetv2의 세부 설정 (예: name: 'B0', 'B2', 'B4', 'B5') 오버라이드 가능
 HGNetv2:
-  name: 'B5' # 예시: 모델 크기 선택
+  name: 'B4' # 예시: 모델 크기 선택
+  return_idx: [1, 2, 3]
+  # freeze_stem_only: True
+  freeze_at: -1
+  freeze_norm: False
   # pretrained: True # dfine_hgnetv2.yml에 이미 있을 것임
   # local_model_dir: 경로/to/pretrained_hgnetv2_weights
 
