@@ -31,7 +31,7 @@ warmup_iter: 1000
 # 학습 에폭, 배치 크기 등은 rt_optimizer.yml 또는 여기서 조정 가능
 epoches: 20 # 예시
 train_dataloader:
-  batch_size: 16 # GPU 메모리에 맞게 조절 (64)
+  batch_size: 64 # GPU 메모리에 맞게 조절 (64)
   # transforms ops는 rt_deim.yml 것을 사용. 필요시 여기서 오버라이드.
   # 예: Resize 크기를 512x512로 명시하거나, Normalize 파라미터 변경
   dataset:
@@ -95,7 +95,7 @@ train_dataloader:
                       # 이유: 학습 후반에는 안정적인 학습을 위해 강한 증강 중단.
 
 val_dataloader:
-  batch_size: 16 # 64
+  batch_size: 64 # 64
   dataset:
     transforms:
       ops:

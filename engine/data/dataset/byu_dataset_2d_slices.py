@@ -37,10 +37,10 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
                  # 추가: 최종 이미지 크기 (YAML에서 설정하거나, 고정값 사용)
                  output_size_h: int = 512,
                  output_size_w: int = 512,
-                 neg_per_pos_tomo=3,      # 모터 존재하는 tomogram 당 음성 슬라이스 샘플 수
-                 neg_per_neg_tomo=3,      # 완전 음성 tomogram 당 샘플 수
-                 sample_nearby=1,         # ±1 슬라이스 범위
-                ):
+                 sample_nearby: int = 1,      # 중심 슬라이스 주변 ±1
+                 neg_per_pos_tomo: int = 3,   # 양성 토모그램당 배경 슬라이스 개수
+                 neg_per_neg_tomo: int = 3    # 완전 음성 토모그램(모터 없는)에 대해 샘플링할 슬라이스 개수
+                 ):
         # super().__init__() # DetDataset 상속 안 하므로 제거 또는 Dataset의 init 호출
         self.data_dir = data_dir 
         self.transforms = transforms
@@ -135,12 +135,9 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
 
 
         # (A) tomo_id -> path dict
-        tid2path = {}
-        for p, t in zip(tomo_file_paths_all, tomo_ids_all):
-            tid2path[t] = p
+        tid2path = {tid: p for tid, p in zip(tomo_ids_all, tomo_file_paths_all)}
 
-        # ### NEW CODE ### 
-        # 1) 각 tomo_id에서 라벨 슬라이스 z좌표 수집
+        # (B) 라벨 있는 슬라이스 z 수집
         pos_slices_per_tomo = defaultdict(set)
         for idx, row in self.df_labels_src.iterrows():
             tid = row['tomo_id']
@@ -148,76 +145,73 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
             if z_rounded >= 0 and z_rounded < 128:
                 pos_slices_per_tomo[tid].add(z_rounded)
 
-
-        # (B) df_labels_src로부터 각 tomo_id의 모터 슬라이스 z좌표들 수집
-        pos_slices_per_tomo = defaultdict(set)
-        # 완전 음성 tomogram 목록도 찾기 위해, tomo_id별 '양성 슬라이스' 개수 tracking
-        for idx, row in self.df_labels_src.iterrows():
-            tid = row['tomo_id']
-            z_rounded = int(round(row['z']))
-            if z_rounded >= 0 and z_rounded < 128:
-                pos_slices_per_tomo[tid].add(z_rounded)
-
-        # pos_tomos / neg_tomos 분류
+        # 양성 tomo / 음성 tomo 구분
         pos_tomos = []
         neg_tomos = []
         for tid in active_tomo_ids_set:
-            if tid in pos_slices_per_tomo and len(pos_slices_per_tomo[tid]) > 0:
+            if len(pos_slices_per_tomo[tid]) > 0:
                 pos_tomos.append(tid)
             else:
                 neg_tomos.append(tid)
 
-        # 최종 self.slice_items 구성
-        final_items = []
+        # ★★ 학습 세트이고, 샘플링을 적용하려면:
+        if self.is_train:
+            final_items = []
 
-        def clamp_z(z):
-            return max(0, min(127, z))
+            def clamp_z(z):
+                return max(0, min(127, z))
 
-        # 2) 양성 tomo: ±sample_nearby + 음성 일부
-        for tid in pos_tomos:
-            if tid not in tid2path:
-                continue
-            path = tid2path[tid]
-            pos_zset = sorted(list(pos_slices_per_tomo[tid]))
-            # (a) ±1(혹은 ±sample_nearby)
-            pos_nearby_z = set()
-            for zc in pos_zset:
-                for dz in range(-sample_nearby, sample_nearby+1):
-                    pos_nearby_z.add(clamp_z(zc+dz))
+            # 1) 양성 tomo: 라벨 ± sample_nearby + 음성 N개
+            for tid in pos_tomos:
+                if tid not in tid2path:
+                    continue
+                path = tid2path[tid]
+                pos_zlist = sorted(list(pos_slices_per_tomo[tid]))
 
-            all_z = set(range(128))
-            # 나머지 음성 z
-            neg_z_candidates = list(all_z - pos_nearby_z)
+                # (a) “±sample_nearby” 부분
+                pos_nearby_z = set()
+                for zc in pos_zlist:
+                    for dz in range(-sample_nearby, sample_nearby + 1):
+                        pos_nearby_z.add(clamp_z(zc + dz))
 
-            # neg_per_pos_tomo개 샘플
-            if len(neg_z_candidates) > neg_per_pos_tomo:
-                neg_z_sub = random.sample(neg_z_candidates, neg_per_pos_tomo)
-            else:
-                neg_z_sub = neg_z_candidates
+                # (b) 해당 tomo에서 남은 z(=배경) 중 일부
+                all_z = set(range(128))
+                background_z = list(all_z - pos_nearby_z)
+                if len(background_z) > neg_per_pos_tomo:
+                    background_z = random.sample(background_z, neg_per_pos_tomo)
 
-            used_z_set = sorted(list(pos_nearby_z)) + sorted(neg_z_sub)
-            for zval in used_z_set:
-                final_items.append((path, zval, tid))
+                # 모으기
+                used_zs = sorted(list(pos_nearby_z)) + sorted(background_z)
+                for zval in used_zs:
+                    final_items.append((path, zval, tid))
 
-        # 3) 완전 음성 tomo: neg_per_neg_tomo
-        for tid in neg_tomos:
-            if tid not in tid2path:
-                continue
-            path = tid2path[tid]
-            all_z = list(range(128))
-            if len(all_z) > neg_per_neg_tomo:
-                sampled_z = random.sample(all_z, neg_per_neg_tomo)
-            else:
-                sampled_z = all_z
-            for zval in sampled_z:
-                final_items.append((path, zval, tid))
+            # 2) 완전 음성 tomo
+            for tid in neg_tomos:
+                if tid not in tid2path:
+                    continue
+                path = tid2path[tid]
+                # 128개 중 neg_per_neg_tomo개
+                all_z = list(range(128))
+                if len(all_z) > neg_per_neg_tomo:
+                    sampled_z = random.sample(all_z, neg_per_neg_tomo)
+                else:
+                    sampled_z = all_z
+                for zval in sampled_z:
+                    final_items.append((path, zval, tid))
 
-        old_count = len(unique_tomo_ids_for_split)*128  # 이론적 max slices if we used them all
-        # 교체
-        self.slice_items = final_items
-        print(f"{'훈련' if self.is_train else '검증'} 데이터셋 샘플링 전 ~{old_count} → 후 {len(self.slice_items)} slices.")
-
-
+            self.slice_items = final_items
+            print(f"[Train sampling] from ~{len(active_tomo_ids_set)*128} slices => {len(self.slice_items)} slices.")
+        else:
+            # 검증 세트는 전부 사용 (원하면 동일 샘플링 적용 가능)
+            final_items = []
+            for tid in active_tomo_ids_set:
+                if tid not in tid2path:
+                    continue
+                path = tid2path[tid]
+                for z in range(128):
+                    final_items.append((path, z, tid))
+            self.slice_items = final_items
+            print(f"[Val set - use ALL] {len(self.slice_items)} slices from {len(active_tomo_ids_set)} tomos")
 
     
     def __len__(self):
