@@ -24,7 +24,7 @@ train_dataloader:
       type: Compose
       # ops: ~ # 메인 설정에서 오버라이드
   shuffle: True
-  num_workers: 12 # 환경에 맞게 조절
+  num_workers: 0 # 환경에 맞게 조절 (12)
   drop_last: True
   collate_fn:
     type: BatchImageCollateFunction # 기존 2D collate 함수
@@ -43,10 +43,10 @@ val_dataloader:
       ops:
         # - {type: ConvertPILImage, dtype: 'float32', scale: True} # Dataset에서 Tensor로 반환 시 불필요
         - {type: Resize, size: [512, 512]} # 입력 크기 일치 확인
-        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True} # 필요시 박스 포맷 변환
+        # - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True} # 필요시 박스 포맷 변환
         - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
   shuffle: False
-  num_workers: 12
+  num_workers: 0 #12
   drop_last: False
   collate_fn:
     type: BatchImageCollateFunction
