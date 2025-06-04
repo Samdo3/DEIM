@@ -239,50 +239,84 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
 
 
     def stop_epoch_forward(self, *inputs: Any) -> PyTuple[Any, Dict, Any]:
+        """
+        - policy['epoch']가 [start_aug, partial_aug, stop_aug] 형태라고 가정.
+        - policy['ops']는 실제로 On/Off할 증강 이름들. (예: ['Mosaic','RandomPhotometricDistort','RandomIoUCrop'] 등)
+        - Resize / Sanitize / ConvertBoxes / Normalize 등 필수 변환은 항상 실행.
+        """
         img_orig, target_orig, dataset_instance = inputs
         current_img = img_orig
         current_target = target_orig
 
+        # 0) epoch 정보 확인
         if not hasattr(dataset_instance, 'epoch'):
             print("Warning: stop_epoch_forward expects 'epoch' attribute.")
             return self.default_forward(img_orig, target_orig, dataset_instance)
         cur_epoch = dataset_instance.epoch
 
+        # 1) policy 검사
         if not (self.policy and isinstance(self.policy, dict) and 'ops' in self.policy and 'epoch' in self.policy):
             print("Warning: 'policy' missing keys. Using default forward.")
             return self.default_forward(img_orig, target_orig, dataset_instance)
 
-        policy_ops_names = self.policy['ops']
-        policy_epoch_thresholds = self.policy['epoch']
+        policy_ops_names = self.policy['ops']       # 예: ['Mosaic','RandomPhotometricDistort','RandomZoomOut','RandomIoUCrop']
+        policy_epoch_thresholds = self.policy['epoch']  # 예: [4, 10, 18]
+        # mosaic_prob가 있다면 가져오고, 없으면 기본값 0
+        mosaic_prob = getattr(self, 'mosaic_prob', 0.0)
 
-        # print(f"DEBUG: stop_epoch_forward - Current Epoch: {cur_epoch}, Policy Epochs: {policy_epoch_thresholds}, Policy Ops: {policy_ops_names}")
-
-
-        # mosaic prob
+        # 2) mosaic 사용 여부 결정
+        #    - start_aug <= cur_epoch < partial_aug 구간에서만 mosaic_prob에 따라 mosaic 적용
+        #    (이 예시는 policy_epoch_thresholds가 [4, 10, 18]라고 가정)
         with_mosaic_this_iteration = False
         if isinstance(policy_epoch_thresholds, list) and len(policy_epoch_thresholds) == 3:
-            if policy_epoch_thresholds[0] <= cur_epoch < policy_epoch_thresholds[1]:
-                current_mosaic_prob = getattr(self, 'mosaic_prob', 0.0)
-                if current_mosaic_prob > 0 and random.random() <= current_mosaic_prob:
+            start_aug, partial_aug, stop_aug = policy_epoch_thresholds
+            if start_aug <= cur_epoch < partial_aug:
+                # 중간 구간에서만 mosaic_prob 로 결정
+                if mosaic_prob > 0 and random.random() <= mosaic_prob:
                     with_mosaic_this_iteration = True
+            elif partial_aug <= cur_epoch < stop_aug:
+                with_mosaic_this_iteration = False
+            # 이후 구간(>= stop_aug)은 다시 mosaic OFF
+            # 초반 구간(< start_aug)도 mosaic OFF
+        else:
+            # policy_epoch_thresholds가 단일 int거나, 세 요소가 아니면 default
+            # 여기서는 그냥 default_forward 써도 되지만, 일단은 no-aug로 가정
+            start_aug, partial_aug, stop_aug = (9999, 9999, 9999)
 
+        # 3) transform 루프
         for i, transform_obj in enumerate(self.transforms, start=1):
             transform_name = type(transform_obj).__name__
             apply_this_transform = True
 
-            if transform_name in policy_ops_names:
-                if isinstance(policy_epoch_thresholds, list) and len(policy_epoch_thresholds) == 3:
-                    is_in_no_aug_period = (cur_epoch < policy_epoch_thresholds[0]) or (cur_epoch >= policy_epoch_thresholds[2])
-                    if is_in_no_aug_period:
-                        apply_this_transform = False
-                    else:
-                        if transform_name == 'Mosaic' and not with_mosaic_this_iteration:
+            # ---- (A) 필수 변환은 무조건 실행 예시 ----
+            #       (Resize, SanitizeBoundingBoxes, ConvertBoxes, Normalize 등)
+            #       => policy_ops에 있더라도 여기서는 건너뛰지 않음
+            essential_transforms = [
+                'Resize',
+                'SanitizeBoundingBoxes',
+                'ConvertBoxes',
+                'Normalize',
+            ]
+            if transform_name in essential_transforms:
+                # 항상 적용
+                pass
+
+            # ---- (B) policy_ops_names 에 들어있는 "강한 증강"만 On/Off ----
+            elif transform_name in policy_ops_names:
+                # 1) no_aug 구간( epoch < start_aug or epoch >= stop_aug ) => skip
+                if (cur_epoch < start_aug) or (cur_epoch >= stop_aug):
+                    apply_this_transform = False
+                else:
+                    # 2) 중간 구간 -> 세부 로직
+                    #   - mosaic만 확률적으로 (mosaic_prob) 켤 수 있음
+                    if transform_name == 'Mosaic':
+                        if not with_mosaic_this_iteration:
                             apply_this_transform = False
-                        elif transform_name in ['RandomZoomOut','RandomIoUCrop'] and with_mosaic_this_iteration:
-                            apply_this_transform = False
-                elif isinstance(policy_epoch_thresholds, int):
-                    if cur_epoch >= policy_epoch_thresholds:
-                        apply_this_transform = False
+
+            # ---- (C) 그 외 transform(essential이 아니지만 policy_ops에 없는 것) => 항상 적용? or skip? ----
+            #     여기선 "항상 적용" 예시
+            else:
+                pass
 
             # --- BEFORE ---
             if current_target and "boxes" in current_target:
@@ -312,49 +346,6 @@ class Compose(T.Compose): # torchvision.transforms.v2.Compose 상속
                 # print(f"[{i}/{type(transform_obj).__name__}] AFTER => {after_boxes[:5]}")
 
                 if isinstance(after_boxes, BoundingBoxes):
-
-                    coords = after_boxes.as_subclass(torch.Tensor)  # shape=[N,4], e.g. XYXY
-
-                    in_fmt_str = str(after_boxes.format.value).lower()
-                    out_fmt_str = str(BoundingBoxFormat.XYXY.value).lower()
-                    temp_xyxy_boxes = box_convert(coords, in_fmt_str, out_fmt_str)
-                    x1_f, y1_f, x2_f, y2_f = temp_xyxy_boxes.unbind(-1)
-                    w_filter = x2_f - x1_f
-                    h_filter = y2_f - y1_f
-                    valid = (w_filter > 1e-6) & (h_filter > 1e-6) # 1e-6 보다 큰 크기의 박스만 유효 처리
-
-                    num_after = len(after_boxes)
-                    num_boxes_before_internal_filter = after_boxes.shape[0]
-                    num_boxes_after_internal_filter = valid.sum().item() # valid는 이 내부 필터의 결과
-
-                    # x1, y1, x2, y2 = coords.unbind(-1)  => 이게 문제
-                    # w = x2 - x1
-                    # h = y2 - y1
-                    # valid = (w>1e-6) & (h>1e-6)
-                    
-                    if valid.any():
-                        coords = coords[valid]
-                        current_target["boxes"] = after_boxes._wrap(
-                            coords,
-                            format=after_boxes.format,
-                            canvas_size=after_boxes.canvas_size
-                        )
-                        # labels, area, etc.도 같이 valid로 필터링
-                        if "labels" in current_target:
-                            current_target["labels"] = current_target["labels"][valid]
-                        if "area" in current_target:
-                            current_target["area"]  = current_target["area"][valid]
-                    else:
-                        # 모두 invalid라면 0개
-                        current_target["boxes"]  = after_boxes._wrap(
-                            coords.new_empty((0,4)),
-                            format=after_boxes.format,
-                            canvas_size=after_boxes.canvas_size
-                        )
-                        if "labels" in current_target:
-                            current_target["labels"] = current_target["labels"].new_empty((0,))
-                        if "area" in current_target:
-                            current_target["area"]  = current_target["area"].new_empty((0,))
                     broken_after = _check_broken_boxes(after_boxes)
                     num_after = len(after_boxes)
 

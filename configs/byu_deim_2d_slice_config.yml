@@ -67,7 +67,7 @@ train_dataloader:
       #   epoch: []
       #   ops : []
       # mosaic_prob: -0.1
-        epoch: [4, 10, 18]
+        epoch: [0, 10, 18]
                            # 계산: [warmup 종료 시점 근처, flat_epoch, epoches - no_aug_epoch]
                            # deim.yml의 epoch: [4, 29, 50]은 epoches=58 기준이었음.
                            # 이 값을 현재 설정된 epoches, flat_epoch, no_aug_epoch에 맞게 재계산 필요.
@@ -89,7 +89,7 @@ train_dataloader:
                    # 만약 단일 스케일로 학습하고 싶다면 이 상태 유지.
     mixup_prob: 0.1 # MixUp 확률 (기본 0.5에서 줄여봄. BYU 데이터 특성상 과도한 Mixup이 불리할 수 있음)
                     # 이유: 실험적으로 조절.
-    mixup_epochs: [4, 10] #  MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
+    mixup_epochs: [0, 10] #  MixUp 적용 에폭 (위 policy.epoch[0], policy.epoch[1]과 유사하게 설정)
                           # 이유: 학습 초중반에만 적용.
     stop_epoch: 18    # 멀티스케일 학습 및 특정 증강 중단 에폭 (policy.epoch[2]와 일치)
                       # 이유: 학습 후반에는 안정적인 학습을 위해 강한 증강 중단.
@@ -102,8 +102,3 @@ val_dataloader:
         - {type: Resize, size: [512, 512]}
         - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
         - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
-
-
-
-
-

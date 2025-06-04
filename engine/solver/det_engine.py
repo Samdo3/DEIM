@@ -82,6 +82,26 @@ def train_one_epoch(
         autocast_dtype = torch.float16 if device.type == 'cuda' else torch.bfloat16
         with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=enabled_autocast):
             outputs = model(samples, device_targets)
+            for t_idx, tgt in enumerate(device_targets):
+                if "boxes" in tgt and tgt["boxes"].numel() > 0:
+                    # 예: matcher는 cxcywh 기반이라고 가정 -> (cx,cy,w,h) => (x1,y1,x2,y2) 변환
+                    # 만약 이미 xyxy라면 box_xyxy = tgt["boxes"] 사용
+                    # 여기서는 cxcywh라고 가정
+                    from ..deim.box_ops import box_cxcywh_to_xyxy
+
+                    boxes_cxcywh = tgt["boxes"]
+                    # 혹은 boxes가 BoundingBoxes 객체라면 .as_subclass(torch.Tensor) 등으로 tensor 얻기
+                    # boxes_cxcywh_t = boxes_cxcywh.as_subclass(torch.Tensor)
+
+                    # 변환
+                    box_xyxy = box_cxcywh_to_xyxy(boxes_cxcywh)
+
+                    x1, y1, x2, y2 = box_xyxy.unbind(-1)
+                    broken_mask = (x2 < x1) | (y2 < y1)
+                    if broken_mask.any():
+                        print(f"[DEBUG][Epoch={epoch}][Iter={i}] Found broken box in device_targets[{t_idx}]:")
+                        print("box_xyxy[broken_mask] =", box_xyxy[broken_mask])
+                        # 필요하면 sys.exit(1)로 중단, 혹은 continue
             loss_dict = criterion(outputs, device_targets)
             weight_dict = criterion.weight_dict
             losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)

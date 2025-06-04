@@ -30,7 +30,7 @@ class BYUDataset2DSlices(Dataset): # DetDataset 대신 torch.utils.data.Dataset�
                  is_train: bool = True,
                  train_val_split_ratio: float = 0.9,
                  random_seed: int = 42,
-                 virtual_box_wh: tuple = (10, 10),
+                 virtual_box_wh: tuple = (20, 20),
                  # 추가: 최종 이미지 크기 (YAML에서 설정하거나, 고정값 사용)
                  output_size_h: int = 512,
                  output_size_w: int = 512
